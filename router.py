@@ -2,7 +2,7 @@ import json
 import uuid
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from sentence_transformers import SentenceTransformer
 
 
@@ -43,11 +43,11 @@ def update_centroid(registry: Dict, slm_name: str, new_embedding: np.ndarray) ->
     entry["chunk_count"] += 1
 
 
-def create_slm(registry: Dict, chunk_id: str, embedding: np.ndarray) -> str:
+def create_slm(registry: Dict, chunk_id: str, embedding: np.ndarray, collection_name: str) -> str:
     slm_name = f"slm_{uuid.uuid4().hex[:8]}"
     _ensure_dirs()
     registry[slm_name] = {
-        "collection": slm_name,
+        "collection": collection_name,
         "chunks_json": str(SLM_DATA_DIR / f"{slm_name}_chunks.json"),
         "centroid": embedding.tolist(),
         "chunk_count": 1,
@@ -58,7 +58,7 @@ def create_slm(registry: Dict, chunk_id: str, embedding: np.ndarray) -> str:
     return slm_name
 
 
-def assign_chunk(chunk_id: str, embedding: np.ndarray, threshold: float = 0.75) -> str:
+def assign_chunk(chunk_id: str, embedding: np.ndarray, collection_name: str, threshold: float = 0.75) -> str:
     registry = load_registry()
 
     best_slm = None
@@ -74,7 +74,7 @@ def assign_chunk(chunk_id: str, embedding: np.ndarray, threshold: float = 0.75) 
             best_slm = slm_name
 
     if best_slm is None or best_score < threshold:
-        slm_name = create_slm(registry, chunk_id, embedding)
+        slm_name = create_slm(registry, chunk_id, embedding, collection_name)
         save_registry(registry)
         return slm_name
 
@@ -91,13 +91,35 @@ def assign_chunk(chunk_id: str, embedding: np.ndarray, threshold: float = 0.75) 
     return best_slm
 
 
-def assign_chunks(chunks: List[Dict], embedding_model: SentenceTransformer, threshold: float = 0.75) -> Dict[str, List[str]]:
+def assign_chunks(chunks: List[Dict], embedding_model: SentenceTransformer, collection_name: str, threshold: float = 0.75) -> Dict[str, List[str]]:
     assignments = {}
     for chunk in chunks:
         embedding = np.array(chunk["embedding"])
-        slm_name = assign_chunk(chunk["id"], embedding, threshold)
+        slm_name = assign_chunk(chunk["id"], embedding, collection_name, threshold)
         assignments.setdefault(slm_name, []).append(chunk["id"])
     return assignments
+
+
+def find_top_n_slms(query_embedding: np.ndarray, registry: Dict, n: int = 3) -> List[Tuple[str, float]]:
+    """Return the top-n SLMs sorted by cosine similarity with the query embedding."""
+    q_norm = float(np.linalg.norm(query_embedding))
+    if q_norm == 0:
+        raise ValueError("Query embedding is a zero vector.")
+    scores = []
+    for slm_name, entry in registry.items():
+        c = entry.get("centroid")
+        if not c:
+            continue
+        cv = np.array(c, dtype=np.float32)
+        cn = float(np.linalg.norm(cv))
+        if cn == 0:
+            continue
+        score = float(np.dot(query_embedding, cv) / (q_norm * cn))
+        scores.append((slm_name, score))
+    if not scores:
+        raise RuntimeError("Registry is empty or has no valid centroids.")
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores[:n]
 
 
 def merge_close_slms(threshold: float = 0.90) -> List[Dict]:

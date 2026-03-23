@@ -13,8 +13,10 @@ def extract_chapters(pdf_path: str) -> List[Dict[str, str]]:
     full_text = "\n".join(page.get_text() for page in doc)
     doc.close()
 
+    # Limit leading number to 1-2 digits to avoid matching bibliography entries
+    # like "225. H. Xiong..." or "1997. J. Martins..." (years and ref numbers are 3+ digits)
     chapter_pattern = re.compile(
-        r'(?m)^(Chapter\s+\d+[^\n]*|CHAPTER\s+\d+[^\n]*|\d+\.\s+[A-Z][^\n]{3,})',
+        r'(?m)^(Chapter\s+\d+[^\n]*|CHAPTER\s+\d+[^\n]*|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}|\d{1,2}\.\s+[A-Z][^\n]{3,})',
     )
 
     matches = list(chapter_pattern.finditer(full_text))

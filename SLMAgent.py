@@ -64,7 +64,7 @@ def retrieve_top_k(
     )
     docs = response["documents"][0]
     distances = response["distances"][0]
-    return [(doc, 1.0 - dist) for doc, dist in zip(docs, distances)]
+    return [(doc, 1.0 - dist ** 2 / 2) for doc, dist in zip(docs, distances)]  # L2 → cosine sim
 
 
 def build_prompt(query: str, context_chunks: List[str]) -> str:
