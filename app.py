@@ -9,7 +9,10 @@ import numpy as np
 import torch
 
 from chunking import process_pdf
-from router import assign_chunks, load_registry, merge_close_slms, find_top_n_slms
+from router import (
+    assign_chunks, load_registry, merge_close_slms, find_top_n_slms,
+    migrate_centroids_to_summaries, refresh_all_summaries,
+)
 import chromadb
 from sentence_transformers import SentenceTransformer
 import gradio as gr
@@ -17,9 +20,16 @@ import gradio as gr
 embedding_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-CHUNK_SIZE = 2000
-OVERLAP = 150
+# Migrazione lazy: converte SLM con centroide → summary embedding
+_migrated = migrate_centroids_to_summaries(embedding_model, chroma_client)
+if _migrated:
+    print(f"[migration] {_migrated} SLM migrati da centroide a summary embedding.")
+
+CHUNK_SIZE = 1500
+OVERLAP = 100
 TOP_N_SLMS = 3
+TOP_K_CHUNKS = 5
+MAX_TOKENS = 256
 RRF_K = 60
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 _model_cache: Dict = {}
@@ -33,12 +43,12 @@ def get_registry_display() -> str:
         return "Registry vuoto."
     lines = []
     for slm_name, entry in registry.items():
-        centroid_preview = [round(v, 4) for v in entry["centroid"][:4]]
+        summary_preview = entry.get("topic_summary", "—")[:80]
         lines.append(
             f"{slm_name}\n"
             f"  chunks     : {entry['chunk_count']}\n"
             f"  collection : {entry['collection']}\n"
-            f"  centroid   : [{', '.join(str(v) for v in centroid_preview)}, ...]\n"
+            f"  summary    : {summary_preview}…\n"
         )
     return "\n".join(lines)
 
@@ -58,21 +68,23 @@ def upload_and_chunk(pdf_file, collection_name):
         col_name,
         metadata={"hnsw:space": "cosine"}
     )
-    chunks = process_pdf(
+    chunks, _, profile_summary = process_pdf(
         pdf_path=pdf_file,
         collection=collection,
         embedding_model=embedding_model,
-        chunk_size=CHUNK_SIZE,
-        overlap=OVERLAP
     )
 
-    assignments = assign_chunks(chunks, embedding_model, col_name, threshold=0.65)
-    merges = merge_close_slms(threshold=0.70)
+    assignments = assign_chunks(chunks, embedding_model, col_name, chroma_client, threshold=0.80)
+    merges = merge_close_slms(threshold=0.92, embedding_model=embedding_model, chroma_client=chroma_client)
+
+    n_refreshed = refresh_all_summaries(embedding_model, chroma_client)
+    summary_line = f"\n{n_refreshed} SLM summary generati con Qwen2.5-3B."
 
     merge_line = f"\n{len(merges)} SLM uniti per prossimità." if merges else ""
     summary = (
         f"{len(chunks)} chunk salvati nella collection '{col_name}'.\n"
-        f"{len(assignments)} SLM aggiornati nel registry.{merge_line}"
+        f"Documento rilevato: {profile_summary}\n"
+        f"{len(assignments)} SLM aggiornati nel registry.{merge_line}{summary_line}"
     )
     preview_data = [
         {"id": c["id"][:8] + "...", "chapter": c["chapter"], "text": c["text"][:130] + "..."}
@@ -222,7 +234,7 @@ def _generate_streaming(query: str, context_chunks: List[str], model_name: str, 
         yield chunk
 
 
-def query_fn(query: str, model_name: str, top_k: int, top_n: int, max_tokens: int):
+def query_fn(query: str, model_name: str):
     if not query.strip():
         yield "Inserisci una domanda.", "", "—"
         return
@@ -237,7 +249,7 @@ def query_fn(query: str, model_name: str, top_k: int, top_n: int, max_tokens: in
     )[0].astype(np.float32)
 
     # 1. Route: find top-N SLMs by centroid similarity
-    top_slms = find_top_n_slms(q_emb, registry, n=int(top_n))
+    top_slms = find_top_n_slms(q_emb, registry, n=TOP_N_SLMS)
 
     routing_lines = "SLM selezionati (routing):\n"
     for slm_name, score in top_slms:
@@ -246,7 +258,7 @@ def query_fn(query: str, model_name: str, top_k: int, top_n: int, max_tokens: in
 
     # 2. Hybrid retrieval: dense + BM25 + RRF
     docs, metas, slm_sources, dense_scores = _retrieve_hybrid(
-        query, q_emb, top_slms, registry, int(top_k)
+        query, q_emb, top_slms, registry, TOP_K_CHUNKS
     )
 
     if not docs:
@@ -280,7 +292,7 @@ def query_fn(query: str, model_name: str, top_k: int, top_n: int, max_tokens: in
 
     try:
         partial = ""
-        for chunk in _generate_streaming(query, docs, model_name.strip(), int(max_tokens)):
+        for chunk in _generate_streaming(query, docs, model_name.strip(), MAX_TOKENS):
             partial += chunk
             yield partial, chunks_text, routing_info
     except Exception as e:
@@ -655,27 +667,10 @@ with gr.Blocks(
                     placeholder="Es. Tell me about hybrid optimization methods..."
                 )
 
-                with gr.Row():
-                    with gr.Column(scale=4):
-                        model_input = gr.Textbox(
-                            label="Modello HuggingFace (opzionale)",
-                            placeholder="es. microsoft/phi-2  —  lascia vuoto per solo retrieval"
-                        )
-                    with gr.Column(scale=1):
-                        top_n_slider = gr.Slider(
-                            minimum=1, maximum=6, value=TOP_N_SLMS, step=1,
-                            label="Top-N SLM"
-                        )
-                    with gr.Column(scale=1):
-                        top_k_slider = gr.Slider(
-                            minimum=3, maximum=15, value=5, step=1,
-                            label="Top-K chunk"
-                        )
-                    with gr.Column(scale=1):
-                        max_tokens_slider = gr.Slider(
-                            minimum=64, maximum=512, value=256, step=32,
-                            label="Max tokens"
-                        )
+                model_input = gr.Textbox(
+                    label="Modello HuggingFace",
+                    value="Qwen/Qwen2.5-3B-Instruct",
+                )
 
                 query_btn = gr.Button("Invia Query", variant="primary")
 
@@ -705,7 +700,7 @@ with gr.Blocks(
     )
     query_btn.click(
         fn=query_fn,
-        inputs=[query_input, model_input, top_k_slider, top_n_slider, max_tokens_slider],
+        inputs=[query_input, model_input],
         outputs=[answer_out, chunks_out, routing_out]
     )
 

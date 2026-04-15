@@ -1,27 +1,134 @@
+"""
+chunking.py — PDF parsing and adaptive chunking via LangChain.
+
+Document type is auto-detected from content heuristics.
+Each type uses tuned chunk_size and overlap parameters.
+Chapter structure is preserved from the PDF as metadata.
+"""
+
 import uuid
 import re
-from typing import List, Dict
-from pathlib import Path
+from typing import List, Dict, Tuple
 
 import fitz
 import chromadb
 from sentence_transformers import SentenceTransformer
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
-def extract_chapters(pdf_path: str) -> List[Dict[str, str]]:
+# ── Chunking profiles per document type ───────────────────────────────
+
+CHUNKING_PROFILES = {
+    "paper": {
+        # Scientific papers: dense, short sections, high information per sentence
+        "chunk_size":    800,
+        "chunk_overlap": 100,
+    },
+    "book": {
+        # Books/textbooks: longer narrative paragraphs, lower density
+        "chunk_size":    2000,
+        "chunk_overlap": 150,
+    },
+    "technical": {
+        # Technical docs, manuals, API docs: mixed prose and code/specs
+        "chunk_size":    1200,
+        "chunk_overlap": 200,
+    },
+    "generic": {
+        # Blogs, articles, emails, unknown format
+        "chunk_size":    1500,
+        "chunk_overlap": 150,
+    },
+}
+
+
+# ── Document type detection ────────────────────────────────────────────
+
+def detect_doc_type(text: str) -> str:
+    """
+    Heuristic detection of document type from full text.
+
+    Returns one of: 'paper', 'book', 'technical', 'generic'.
+    """
+    sample = text[:8000].lower()
+
+    # Count heuristic signals
+    paper_signals = sum([
+        bool(re.search(r'\babstract\b', sample)),
+        bool(re.search(r'\bintroduction\b', sample)),
+        bool(re.search(r'\bconclusion\b', sample)),
+        bool(re.search(r'\breferences\b', sample)),
+        bool(re.search(r'\bmethodolog', sample)),
+        bool(re.search(r'\brelated work\b', sample)),
+        bool(re.search(r'\bexperiment', sample)),
+        bool(re.search(r'\bdoi\b|\barxiv\b', sample)),
+        len(re.findall(r'\[\d+\]', sample)) > 3,       # citation markers [1], [2]
+        len(re.findall(r'\d+\.\s+[a-z]', sample)) > 4, # numbered sections
+    ])
+
+    book_signals = sum([
+        bool(re.search(r'\bchapter\b', sample)),
+        bool(re.search(r'\bpreface\b|\bforeword\b', sample)),
+        len(re.findall(r'\n\n', text[:8000])) > 20,    # many paragraph breaks
+        len(text) > 50000,                              # long document
+    ])
+
+    technical_signals = sum([
+        bool(re.search(r'\bapi\b|\bendpoint\b', sample)),
+        bool(re.search(r'def |class |function |import |```', sample)),
+        bool(re.search(r'\bparameter[s]?\b|\bargument[s]?\b', sample)),
+        bool(re.search(r'\binstallation\b|\bconfiguration\b', sample)),
+        len(re.findall(r'`[^`]+`', text[:8000])) > 5,  # inline code
+    ])
+
+    scores = {
+        "paper":     paper_signals,
+        "book":      book_signals,
+        "technical": technical_signals,
+    }
+
+    best = max(scores, key=lambda k: scores[k])
+    if scores[best] >= 2:
+        return best
+    return "generic"
+
+
+def get_chunker(doc_type: str) -> Tuple[RecursiveCharacterTextSplitter, Dict]:
+    """
+    Return a LangChain splitter configured for the given document type.
+    Also returns the profile dict for logging.
+    """
+    profile = CHUNKING_PROFILES.get(doc_type, CHUNKING_PROFILES["generic"])
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=profile["chunk_size"],
+        chunk_overlap=profile["chunk_overlap"],
+        separators=["\n\n", "\n", ".", " ", ""],
+        length_function=len,
+    )
+    return splitter, profile
+
+
+# ── Chapter extraction ─────────────────────────────────────────────────
+
+def extract_chapters(pdf_path: str) -> Tuple[List[Dict[str, str]], str]:
+    """
+    Extract text from PDF, split into chapters using heading patterns.
+    Falls back to a single 'Document' section if no headings are found.
+
+    Returns (chapters, full_text).
+    """
     doc = fitz.open(pdf_path)
     full_text = "\n".join(page.get_text() for page in doc)
     doc.close()
 
-    # Limit leading number to 1-2 digits to avoid matching bibliography entries
-    # like "225. H. Xiong..." or "1997. J. Martins..." (years and ref numbers are 3+ digits)
     chapter_pattern = re.compile(
-        r'(?m)^(Chapter\s+\d+[^\n]*|CHAPTER\s+\d+[^\n]*|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}|\d{1,2}\.\s+[A-Z][^\n]{3,})',
+        r'(?m)^(Chapter\s+\d+[^\n]*|CHAPTER\s+\d+[^\n]*'
+        r'|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}|\d{1,2}\.\s+[A-Z][^\n]{3,})',
     )
 
     matches = list(chapter_pattern.finditer(full_text))
     if not matches:
-        return [{"chapter": "Document", "text": full_text.strip()}]
+        return [{"chapter": "Document", "text": full_text.strip()}], full_text
 
     chapters = []
     for i, match in enumerate(matches):
@@ -32,56 +139,93 @@ def extract_chapters(pdf_path: str) -> List[Dict[str, str]]:
         if text:
             chapters.append({"chapter": title, "text": text})
 
-    return chapters
+    return chapters, full_text
 
 
-def chunk_chapter(chapter: Dict[str, str], chunk_size: int = 1000, overlap: int = 100) -> List[Dict[str, str]]:
-    text = chapter["text"]
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(start + chunk_size, len(text))
-        chunks.append({
-            "chapter": chapter["chapter"],
-            "text": text[start:end].strip()
-        })
-        start += chunk_size - overlap
-    return chunks
-
+# ── Main entry point ───────────────────────────────────────────────────
 
 def process_pdf(
     pdf_path: str,
     collection: chromadb.Collection,
     embedding_model: SentenceTransformer,
-    chunk_size: int = 1000,
-    overlap: int = 100
-) -> List[Dict]:
-    chapters = extract_chapters(pdf_path)
+    chunk_size: int = None,
+    overlap: int = None,
+) -> Tuple[List[Dict], str, str]:
+    """
+    Parse PDF, auto-detect document type, chunk adaptively with LangChain,
+    embed in batch, and store in ChromaDB.
 
-    raw_chunks = []
+    Args:
+        chunk_size: if provided, overrides the adaptive profile (manual override).
+        overlap:    if provided, overrides the adaptive profile (manual override).
+
+    Returns:
+        (chunks, doc_type, profile_summary)
+        chunks: list of dicts with keys id, text, chapter, embedding.
+        doc_type: detected document type string.
+        profile_summary: human-readable description of parameters used.
+    """
+    chapters, full_text = extract_chapters(pdf_path)
+
+    # Auto-detect document type
+    doc_type = detect_doc_type(full_text)
+    splitter, profile = get_chunker(doc_type)
+
+    # Manual override if explicit values provided
+    if chunk_size is not None or overlap is not None:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size or profile["chunk_size"],
+            chunk_overlap=overlap or profile["chunk_overlap"],
+            separators=["\n\n", "\n", ".", " ", ""],
+            length_function=len,
+        )
+        profile = {
+            "chunk_size":    chunk_size or profile["chunk_size"],
+            "chunk_overlap": overlap or profile["chunk_overlap"],
+        }
+
+    profile_summary = (
+        f"tipo={doc_type}  "
+        f"chunk_size={profile['chunk_size']}  "
+        f"overlap={profile['chunk_overlap']}"
+    )
+
+    # Split each chapter
+    raw_chunks: List[Dict[str, str]] = []
     for chapter in chapters:
-        raw_chunks.extend(chunk_chapter(chapter, chunk_size, overlap))
+        splits = splitter.split_text(chapter["text"])
+        for text in splits:
+            text = text.strip()
+            if text:
+                raw_chunks.append({"chapter": chapter["chapter"], "text": text})
+
+    if not raw_chunks:
+        return [], doc_type, profile_summary
+
+    # Batch embedding
+    texts = [c["text"] for c in raw_chunks]
+    embeddings = embedding_model.encode(
+        texts,
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        batch_size=32,
+        show_progress_bar=len(texts) > 50,
+    )
 
     chunks = []
-    for raw in raw_chunks:
-        chunk_id = str(uuid.uuid4())
-        embedding = embedding_model.encode(
-            [raw["text"]], normalize_embeddings=True, convert_to_numpy=True
-        )[0].tolist()
-
-        chunk = {
-            "id": chunk_id,
-            "text": raw["text"],
-            "chapter": raw["chapter"],
-            "embedding": embedding
-        }
-        chunks.append(chunk)
+    for i, raw in enumerate(raw_chunks):
+        chunks.append({
+            "id":        str(uuid.uuid4()),
+            "text":      raw["text"],
+            "chapter":   raw["chapter"],
+            "embedding": embeddings[i].tolist(),
+        })
 
     collection.add(
         ids=[c["id"] for c in chunks],
         embeddings=[c["embedding"] for c in chunks],
         documents=[c["text"] for c in chunks],
-        metadatas=[{"chapter": c["chapter"]} for c in chunks]
+        metadatas=[{"chapter": c["chapter"]} for c in chunks],
     )
 
-    return chunks
+    return chunks, doc_type, profile_summary

@@ -1,7 +1,11 @@
+"""
+SLMAgent.py — SLM data structure and retrieval logic.
+"""
+
 import json
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -15,6 +19,14 @@ class SLMAgent:
     model_name: str
     chunks_json_path: str
     collection_name: str
+
+    # NEW: centroid and summary fields matching registry structure
+    centroid_embedding: Optional[List[float]] = field(default=None)
+    topic_summary: str = field(default="")
+    keywords: List[str] = field(default_factory=list)
+    summary_embedding: Optional[List[float]] = field(default=None)
+
+    # Runtime model state (not serialized)
     tokenizer: Optional[AutoTokenizer] = field(default=None, repr=False)
     model: Optional[AutoModelForCausalLM] = field(default=None, repr=False)
     _chunk_ids: List[str] = field(default_factory=list, repr=False)
@@ -26,7 +38,7 @@ def load_slm_agent(agent: SLMAgent, device: str = "cpu") -> SLMAgent:
     agent.model = AutoModelForCausalLM.from_pretrained(
         agent.model_name,
         torch_dtype=torch.float32 if device == "cpu" else torch.float16,
-        trust_remote_code=True
+        trust_remote_code=True,
     ).to(device)
     agent.model.eval()
     _sync_chunk_ids(agent)
@@ -34,6 +46,7 @@ def load_slm_agent(agent: SLMAgent, device: str = "cpu") -> SLMAgent:
 
 
 def _sync_chunk_ids(agent: SLMAgent) -> None:
+    """Reload chunk IDs from disk if the file has changed since last read."""
     path = Path(agent.chunks_json_path)
     mtime = path.stat().st_mtime
     if mtime != agent._last_modified:
@@ -53,18 +66,20 @@ def retrieve_top_k(
     chunk_ids: List[str],
     collection: chromadb.Collection,
     embedding_model: SentenceTransformer,
-    top_k: int = 5
+    top_k: int = 5,
 ) -> List[Tuple[str, float]]:
-    query_emb = embedding_model.encode([query], normalize_embeddings=True, convert_to_numpy=True)[0].tolist()
+    query_emb = embedding_model.encode(
+        [query], normalize_embeddings=True, convert_to_numpy=True
+    )[0].tolist()
     response = collection.query(
         query_embeddings=[query_emb],
         n_results=min(top_k, len(chunk_ids)),
         where={"id": {"$in": chunk_ids}},
-        include=["documents", "distances"]
+        include=["documents", "distances"],
     )
     docs = response["documents"][0]
     distances = response["distances"][0]
-    return [(doc, 1.0 - dist ** 2 / 2) for doc, dist in zip(docs, distances)]  # L2 → cosine sim
+    return [(doc, 1.0 - dist ** 2 / 2) for doc, dist in zip(docs, distances)]
 
 
 def build_prompt(query: str, context_chunks: List[str]) -> str:
@@ -88,7 +103,7 @@ def generate_answer(
     model: AutoModelForCausalLM,
     max_new_tokens: int = 512,
     temperature: float = 0.1,
-    device: str = "cpu"
+    device: str = "cpu",
 ) -> str:
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
     with torch.no_grad():
@@ -111,7 +126,7 @@ def rag(
     top_k: int = 5,
     max_new_tokens: int = 512,
     temperature: float = 0.1,
-    device: str = "cpu"
+    device: str = "cpu",
 ) -> Dict:
     if agent.model is None or agent.tokenizer is None:
         raise RuntimeError(f"Agent '{agent.name}' is not loaded. Call load_slm_agent() first.")
@@ -127,9 +142,9 @@ def rag(
     answer = generate_answer(prompt, agent.tokenizer, agent.model, max_new_tokens, temperature, device)
 
     return {
-        "agent": agent.name,
-        "query": query,
-        "answer": answer,
+        "agent":            agent.name,
+        "query":            query,
+        "answer":           answer,
         "retrieved_chunks": context_chunks,
         "retrieval_scores": scores,
     }

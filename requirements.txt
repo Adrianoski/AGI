@@ -6,6 +6,8 @@ torch
 transformers==4.32.1
 numpy==1.24.3
 scikit-learn==1.3.0
+langchain-text-splitters
+rank_bm25
 
 # Opzionale — per la riduzione UMAP in extract_vectors.py
 # umap-learn

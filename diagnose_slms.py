@@ -19,8 +19,8 @@ REGISTRY_PATH = Path("registry.json")
 with open(REGISTRY_PATH) as f:
     registry = json.load(f)
 
-slm_names = list(registry.keys())
-centroids = {k: np.array(v["centroid"]) for k, v in registry.items()}
+slm_names = [k for k in registry if registry[k].get("centroid_embedding")]
+centroids = {k: np.array(v["centroid_embedding"]) for k, v in registry.items() if v.get("centroid_embedding")}
 
 print(f"SLM totali: {len(slm_names)}")
 print(f"Chunk totali: {sum(v['chunk_count'] for v in registry.values())}\n")
