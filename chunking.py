@@ -118,7 +118,7 @@ def extract_chapters(pdf_path: str) -> Tuple[List[Dict[str, str]], str]:
     Returns (chapters, full_text).
     """
     doc = fitz.open(pdf_path)
-    full_text = "\n".join(page.get_text() for page in doc)
+    full_text = "\n\n".join(page.get_text() for page in doc)
     doc.close()
 
     chapter_pattern = re.compile(
@@ -190,13 +190,18 @@ def process_pdf(
         f"overlap={profile['chunk_overlap']}"
     )
 
+    _index_noise = re.compile(
+        r'(INDICE\s+volume|Aula\s+Virtuale|Glossario|pag\.\s*\d{2,3}\s*$)',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
     # Split each chapter
     raw_chunks: List[Dict[str, str]] = []
     for chapter in chapters:
         splits = splitter.split_text(chapter["text"])
         for text in splits:
             text = text.strip()
-            if text:
+            if text and not _index_noise.search(text):
                 raw_chunks.append({"chapter": chapter["chapter"], "text": text})
 
     if not raw_chunks:

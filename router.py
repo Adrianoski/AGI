@@ -26,7 +26,7 @@ TOP_DIVERSE: int = 5           # least central chunks added for coverage
 
 
 # Hardcoded summary LLM — always used, never configurable by the user
-SUMMARY_MODEL: str = "Qwen/Qwen2.5-3B-Instruct"
+SUMMARY_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
 
 # Model-agnostic summary function type.
 # Input:  list of chunk texts (representative subset)
@@ -189,20 +189,18 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
         "You are a knowledge indexing assistant.\n"
         "Given the following text chunks, extract:\n"
         "1. A SUMMARY: one sentence describing the main topic.\n"
-        "2. KEYWORDS: 15-25 specific keywords and key phrases (comma-separated).\n"
+        "2. KEYWORDS: 15-25 specific keywords for every chunk (comma-separated).\n"
         "   Include: named entities, technical terms, places, people, events, concepts.\n"
         "   Do NOT include generic words like 'chapter', 'text', 'document'.\n\n"
         f"CHUNKS:\n{excerpt}\n\n"
         "SUMMARY:\n"
     )
-
     inputs = _summary_tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
     with torch.no_grad():
         out = _summary_mdl.generate(
             **inputs,
-            max_new_tokens=200,
-            temperature=0.1,
-            do_sample=False,
+            max_new_tokens=150,
+            do_sample=migrate_centroids_to_summaries,
             pad_token_id=_summary_tok.eos_token_id,
         )
     decoded = _summary_tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
@@ -212,7 +210,19 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
     if "KEYWORDS:" in decoded:
         parts = decoded.split("KEYWORDS:", 1)
         topic_summary = parts[0].strip()
-        keywords = [k.strip() for k in parts[1].replace("\n", ",").split(",") if k.strip()]
+        raw_keywords = [k.strip() for k in parts[1].replace("\n", ",").split(",") if k.strip()]
+        # Stop at first keyword that looks like Qwen self-commentary:
+        # - longer than 60 chars (not a keyword)
+        # - starts with "Note:" or "The " (meta-commentary pattern)
+        _noise_prefixes = ("note:", "the summary", "the keyword", "a knowledge", "while the")
+        clean: List[str] = []
+        for kw in raw_keywords:
+            if len(kw) > 60:
+                break
+            if kw.lower().startswith(_noise_prefixes):
+                break
+            clean.append(kw)
+        keywords = clean
 
     return topic_summary, keywords
 
@@ -423,6 +433,288 @@ def assign_chunks(
             summary_fn=summary_fn,
         )
         assignments.setdefault(slm_name, []).append(chunk["id"])
+    return assignments
+
+
+# ── Chapter-based SLM assignment ──────────────────────────────────────
+
+def assign_chunks_by_chapter(
+    chunks: List[Dict],
+    collection_name: str,
+) -> Dict[str, List[str]]:
+    """
+    Create one SLM per chapter using the 'chapter' metadata already present
+    on each chunk (set by chunking.extract_chapters).
+
+    This is the primary assignment strategy when chapter structure is detected.
+    Each chapter becomes a single SLM; centroid is computed from all chunk
+    embeddings in that chapter.
+
+    Args:
+        chunks:          list of dicts with keys id, text, chapter, embedding.
+        collection_name: ChromaDB collection name stored in each SLM entry.
+
+    Returns:
+        assignments dict {slm_name: [chunk_id, ...]}
+    """
+    _ensure_dirs()
+
+    # Group chunks by chapter title
+    chapter_groups: Dict[str, List[Dict]] = {}
+    for chunk in chunks:
+        chapter = chunk.get("chapter", "Document") or "Document"
+        chapter_groups.setdefault(chapter, []).append(chunk)
+
+    registry = load_registry()
+    assignments: Dict[str, List[str]] = {}
+
+    for chapter_title, chapter_chunks in chapter_groups.items():
+        slm_name = f"slm_{uuid.uuid4().hex[:8]}"
+
+        chunk_ids = [c["id"] for c in chapter_chunks]
+
+        # Compute centroid from all chunk embeddings in this chapter
+        vecs = np.array([c["embedding"] for c in chapter_chunks], dtype=np.float32)
+        centroid = vecs.mean(axis=0)
+        norm = float(np.linalg.norm(centroid))
+        centroid = (centroid / norm).tolist() if norm > 0 else centroid.tolist()
+
+        # Write chunk list to disk
+        chunks_path = SLM_DATA_DIR / f"{slm_name}_chunks.json"
+        with open(chunks_path, "w") as f:
+            json.dump([{"id": cid} for cid in chunk_ids], f, indent=2)
+
+        registry[slm_name] = {
+            "collection":         collection_name,
+            "chunks_json":        str(chunks_path),
+            "chunk_count":        len(chunk_ids),
+            "centroid_embedding": centroid,
+            "topic_summary":      chapter_title,   # use chapter title as initial summary
+            "keywords":           [],
+            "summary_embedding":  [],
+        }
+        assignments[slm_name] = chunk_ids
+
+    save_registry(registry)
+    print(f"[chapter] {len(assignments)} SLM creati da {len(chunks)} chunk "
+          f"({len(chapter_groups)} capitoli) in '{collection_name}'.")
+    return assignments
+
+
+def assign_chunks_auto(
+    chunks: List[Dict],
+    embedding_model: SentenceTransformer,
+    collection_name: str,
+    chroma_client,
+    threshold: float = 0.65,
+) -> Tuple[Dict[str, List[str]], str]:
+    """
+    Primary entry point for chunk assignment.
+
+    Strategy:
+      - If multiple distinct chapters are detected → assign_chunks_by_chapter()
+      - Otherwise (single 'Document' section or no chapters) → assign_chunks()
+
+    Returns:
+        (assignments, strategy_used)  where strategy_used is 'chapter' or 'cosine'.
+    """
+    chapters = {c.get("chapter", "Document") for c in chunks}
+    # Fallback if only one chapter label (e.g. "Document") detected
+    if len(chapters) <= 1:
+        return assign_chunks(chunks, embedding_model, collection_name, chroma_client, threshold), "cosine"
+
+    return assign_chunks_by_chapter(chunks, collection_name), "chapter"
+
+
+# ── HDBSCAN batch clustering ───────────────────────────────────────────
+
+# Path where the fitted HDBSCAN model is persisted between runs.
+HDBSCAN_MODEL_PATH = Path("hdbscan_model.pkl")
+
+
+def cluster_chunks_hdbscan(
+    collection_name: str,
+    chroma_client,
+    min_cluster_size: int = 5,
+    min_samples: int = 3,
+    noise_threshold: float = 0.60,
+    force_refit: bool = False,
+) -> Dict[str, List[str]]:
+    """
+    Cluster ALL chunks in a ChromaDB collection using HDBSCAN.
+
+    Replaces assign_chunks() for batch ingestion.  For incremental ingestion
+    (new document added later), the saved model is reused via approximate_predict().
+    If the fraction of noise points exceeds noise_threshold, HDBSCAN is refitted
+    on all chunks automatically.
+
+    Args:
+        collection_name:  ChromaDB collection to cluster.
+        chroma_client:    persistent ChromaDB client.
+        min_cluster_size: minimum number of chunks to form a cluster (HDBSCAN param).
+        min_samples:      controls how conservative the clustering is (HDBSCAN param).
+        noise_threshold:  if fraction of noise points > this, refit from scratch.
+        force_refit:      always refit even if a saved model exists.
+
+    Returns:
+        assignments dict {slm_name: [chunk_id, ...]} — same shape as assign_chunks().
+
+    Notes:
+        - Chunks labelled as noise (label == -1) by HDBSCAN are assigned to the
+          nearest cluster centroid (fallback cosine assignment).
+        - Requires: pip install hdbscan
+    """
+    try:
+        import hdbscan as hdbscan_lib
+        import pickle
+    except ImportError:
+        raise ImportError("pip install hdbscan")
+
+    _ensure_dirs()
+
+    # ── Load all embeddings from ChromaDB ──────────────────────────────
+    col = chroma_client.get_collection(collection_name)
+    data = col.get(include=["embeddings", "documents", "metadatas"])
+    embeddings = data.get("embeddings")
+    ids        = data.get("ids") or []
+
+    if embeddings is None or len(embeddings) == 0:
+        print("[hdbscan] Nessun embedding trovato nella collection.")
+        return {}
+
+    X = np.array(embeddings, dtype=np.float32)
+    n_total = len(X)
+    print(f"[hdbscan] {n_total} chunk da clusterizzare...")
+
+    # ── PCA reduction before HDBSCAN ──────────────────────────────────
+    # In 768D cosine distances are compressed in a narrow range → HDBSCAN
+    # collapses everything into one cluster. PCA to 50D separates the
+    # principal directions and makes density differences visible.
+    from sklearn.decomposition import PCA
+    n_components = min(50, n_total - 1, X.shape[1])
+    print(f"[hdbscan] PCA {X.shape[1]}D → {n_components}D ...")
+    pca = PCA(n_components=n_components, random_state=42)
+    X_reduced = pca.fit_transform(X)
+    var_explained = pca.explained_variance_ratio_.sum() * 100
+    print(f"[hdbscan] Varianza spiegata: {var_explained:.1f}%")
+
+    # ── Fit or reuse model ─────────────────────────────────────────────
+    clusterer = None
+    labels = None
+
+    if not force_refit and HDBSCAN_MODEL_PATH.exists():
+        print("[hdbscan] Carico modello salvato, uso approximate_predict()...")
+        with open(HDBSCAN_MODEL_PATH, "rb") as f:
+            saved = pickle.load(f)
+        clusterer = saved["clusterer"]
+        saved_pca = saved["pca"]
+        X_pred = saved_pca.transform(X)
+        labels_new, _ = hdbscan_lib.approximate_predict(clusterer, X_pred)
+        noise_frac = float(np.sum(labels_new == -1)) / n_total
+        print(f"[hdbscan] Noise fraction con modello esistente: {noise_frac:.1%}")
+
+        if noise_frac > noise_threshold:
+            print(f"[hdbscan] Noise > {noise_threshold:.0%} — rifitto da zero.")
+            clusterer = None
+
+        if clusterer is not None:
+            labels = labels_new
+            X_reduced = X_pred
+
+    if clusterer is None:
+        print("[hdbscan] Fitto HDBSCAN su tutti i chunk...")
+        clusterer = hdbscan_lib.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric="euclidean",     # euclidean is correct after PCA reduction
+            prediction_data=True,
+        )
+        labels = clusterer.fit_predict(X_reduced)
+        with open(HDBSCAN_MODEL_PATH, "wb") as f:
+            pickle.dump({"clusterer": clusterer, "pca": pca}, f)
+        print(f"[hdbscan] Modello salvato in {HDBSCAN_MODEL_PATH}")
+
+    unique_labels = set(labels)
+    n_clusters = len(unique_labels - {-1})
+    n_noise = int(np.sum(labels == -1))
+    print(f"[hdbscan] {n_clusters} cluster · {n_noise} noise ({n_noise/n_total:.1%})")
+
+    # ── Assign noise points to nearest cluster centroid ────────────────
+    # Build centroid per cluster label first
+    cluster_centroids: Dict[int, np.ndarray] = {}
+    for lbl in unique_labels:
+        if lbl == -1:
+            continue
+        mask = labels == lbl
+        c = X[mask].mean(axis=0)
+        norm = np.linalg.norm(c)
+        cluster_centroids[lbl] = c / norm if norm > 0 else c
+
+    if n_noise > 0 and cluster_centroids:
+        for i, lbl in enumerate(labels):
+            if lbl != -1:
+                continue
+            e = X[i]
+            e_norm = np.linalg.norm(e)
+            best_lbl, best_score = -1, -2.0
+            for cl, centroid in cluster_centroids.items():
+                score = float(np.dot(e / e_norm, centroid)) if e_norm > 0 else 0.0
+                if score > best_score:
+                    best_score = score
+                    best_lbl = cl
+            labels[i] = best_lbl
+        print(f"[hdbscan] {n_noise} noise riassegnati al cluster più vicino.")
+
+    # ── Build SLM registry from clusters ──────────────────────────────
+    registry = load_registry()
+
+    # Remove previous SLMs for this collection so we start fresh
+    to_remove = [k for k, v in registry.items() if v.get("collection") == collection_name]
+    for k in to_remove:
+        chunks_path = Path(registry[k]["chunks_json"])
+        if chunks_path.exists():
+            chunks_path.unlink()
+        del registry[k]
+    if to_remove:
+        print(f"[hdbscan] Rimossi {len(to_remove)} SLM precedenti per '{collection_name}'.")
+
+    # Create one SLM per cluster
+    label_to_slm: Dict[int, str] = {}
+    for lbl in sorted(set(labels)):
+        slm_name = f"slm_{uuid.uuid4().hex[:8]}"
+        mask = np.where(labels == lbl)[0]
+        chunk_ids_for_cluster = [ids[i] for i in mask]
+
+        # Compute centroid
+        vecs = X[mask]
+        centroid = vecs.mean(axis=0)
+        norm = np.linalg.norm(centroid)
+        centroid = (centroid / norm).tolist() if norm > 0 else centroid.tolist()
+
+        # Write chunk list to disk
+        _ensure_dirs()
+        chunks_path = SLM_DATA_DIR / f"{slm_name}_chunks.json"
+        with open(chunks_path, "w") as f:
+            json.dump([{"id": cid} for cid in chunk_ids_for_cluster], f, indent=2)
+
+        registry[slm_name] = {
+            "collection":         collection_name,
+            "chunks_json":        str(chunks_path),
+            "chunk_count":        len(chunk_ids_for_cluster),
+            "centroid_embedding": centroid,
+            "topic_summary":      "",
+            "keywords":           [],
+            "summary_embedding":  [],
+        }
+        label_to_slm[lbl] = slm_name
+
+    save_registry(registry)
+
+    assignments = {
+        label_to_slm[lbl]: [ids[i] for i in np.where(labels == lbl)[0]]
+        for lbl in sorted(set(labels))
+    }
+    print(f"[hdbscan] {len(assignments)} SLM creati e salvati nel registry.")
     return assignments
 
 

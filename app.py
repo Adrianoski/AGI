@@ -10,7 +10,7 @@ import torch
 
 from chunking import process_pdf
 from router import (
-    assign_chunks, load_registry, merge_close_slms, find_top_n_slms,
+    assign_chunks_auto, load_registry, merge_close_slms, find_top_n_slms,
     migrate_centroids_to_summaries, refresh_all_summaries,
 )
 import chromadb
@@ -74,11 +74,11 @@ def upload_and_chunk(pdf_file, collection_name):
         embedding_model=embedding_model,
     )
 
-    assignments = assign_chunks(chunks, embedding_model, col_name, chroma_client, threshold=0.80)
-    merges = merge_close_slms(threshold=0.92, embedding_model=embedding_model, chroma_client=chroma_client)
+    assignments, _strategy = assign_chunks_auto(chunks, embedding_model, col_name, chroma_client, threshold=0.55)
+    merges = merge_close_slms(threshold=0.88, embedding_model=embedding_model, chroma_client=chroma_client)
 
     n_refreshed = refresh_all_summaries(embedding_model, chroma_client)
-    summary_line = f"\n{n_refreshed} SLM summary generati con Qwen2.5-3B."
+    summary_line = f"\n{n_refreshed} SLM summary generati con Qwen2.5-7B-Instruct."
 
     merge_line = f"\n{len(merges)} SLM uniti per prossimità." if merges else ""
     summary = (
@@ -291,10 +291,12 @@ def query_fn(query: str, model_name: str):
     yield loading_msg, chunks_text, routing_info
 
     try:
+        import re as _re
         partial = ""
         for chunk in _generate_streaming(query, docs, model_name.strip(), MAX_TOKENS):
             partial += chunk
-            yield partial, chunks_text, routing_info
+            display = _re.sub(r"<think>.*?</think>", "", partial, flags=_re.DOTALL).strip()
+            yield display, chunks_text, routing_info
     except Exception as e:
         yield f"Errore durante la generazione:\n{e}", chunks_text, routing_info
 
@@ -600,12 +602,6 @@ svg { color: var(--text-dim) !important; }
 
 with gr.Blocks(
     title="Mecella/Laura RAG",
-    theme=gr.themes.Base(
-        primary_hue="violet",
-        neutral_hue="slate",
-        font=[gr.themes.GoogleFont("Inter"), "sans-serif"],
-    ),
-    css=CSS
 ) as demo:
 
     with gr.Tabs():
@@ -669,7 +665,7 @@ with gr.Blocks(
 
                 model_input = gr.Textbox(
                     label="Modello HuggingFace",
-                    value="Qwen/Qwen2.5-3B-Instruct",
+                    value="Qwen/Qwen3.5-4B",
                 )
 
                 query_btn = gr.Button("Invia Query", variant="primary")
@@ -705,4 +701,13 @@ with gr.Blocks(
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=gr.themes.Base(
+            primary_hue="violet",
+            neutral_hue="slate",
+            font=[gr.themes.GoogleFont("Inter"), "sans-serif"],
+        ),
+        css=CSS,
+    )

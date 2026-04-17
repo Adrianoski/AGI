@@ -52,7 +52,7 @@ with open(registry_path, "r") as f:
     registry = json.load(f)
 
 slm_names = list(registry.keys())
-print(f"       Found {len(slm_names)} SLM(s): {slm_names}")
+print(f"       Found {len(slm_names)} SLM(s)")
 
 # Load chunk-to-SLM mapping from slm_data JSONs
 chunk_to_slm = {}
@@ -67,7 +67,6 @@ for slm_name, entry in registry.items():
             cid = c["id"]
             chunk_to_slm[cid] = slm_name
             slm_chunk_ids[slm_name].append(cid)
-        print(f"       {slm_name}: {len(chunk_list)} chunks, centroid dim={len(entry.get('centroid', []))}")
     else:
         print(f"  WARN: {chunks_path} not found for {slm_name}")
 
@@ -132,15 +131,17 @@ centroid_vecs = []
 centroid_info = []
 for slm_name in slm_names:
     entry = registry[slm_name]
-    centroid_emb = entry.get("centroid", [])
+    centroid_emb = entry.get("centroid_embedding", [])
     if not centroid_emb:
-        print(f"  WARN: No centroid for {slm_name}, skipping.")
+        print(f"  WARN: No centroid_embedding for {slm_name}, skipping.")
         continue
     centroid_vecs.append(centroid_emb)
     centroid_info.append({
-        "slm_name":    slm_name,
-        "chunk_count":  entry.get("chunk_count", len(slm_chunk_ids.get(slm_name, []))),
-        "collection":   entry.get("collection", slm_name),
+        "slm_name":      slm_name,
+        "chunk_count":   entry.get("chunk_count", len(slm_chunk_ids.get(slm_name, []))),
+        "collection":    entry.get("collection", ""),
+        "topic_summary": entry.get("topic_summary", ""),
+        "keywords":      entry.get("keywords", []),
     })
 
 n_centroids = len(centroid_vecs)
