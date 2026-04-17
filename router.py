@@ -190,6 +190,7 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
         "Given the following text chunks, extract:\n"
         "1. A SUMMARY: one sentence describing the main topic.\n"
         "2. KEYWORDS: 15-25 specific keywords for every chunk (comma-separated).\n"
+        "   IMPORTANT: always write keywords in ENGLISH, regardless of the source language.\n"
         "   Include: named entities, technical terms, places, people, events, concepts.\n"
         "   Do NOT include generic words like 'chapter', 'text', 'document'.\n\n"
         f"CHUNKS:\n{excerpt}\n\n"
