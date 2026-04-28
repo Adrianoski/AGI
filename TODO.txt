@@ -1,0 +1,8 @@
+Usare DeepEval
+Misurare:
+- Contextual Precision
+- Contextual Recall
+
+- Answer Relevancy
+- Faithfulness
+- Hallucination
