@@ -10,7 +10,7 @@ import uuid
 import re
 from typing import List, Dict, Tuple
 
-import fitz
+import pymupdf4llm
 import chromadb
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -26,7 +26,7 @@ CHUNKING_PROFILES = {
     },
     "book": {
         # Books/textbooks: longer narrative paragraphs, lower density
-        "chunk_size":    2000,
+        "chunk_size":    1500,
         "chunk_overlap": 150,
     },
     "technical": {
@@ -110,20 +110,28 @@ def get_chunker(doc_type: str) -> Tuple[RecursiveCharacterTextSplitter, Dict]:
 
 # ── Chapter extraction ─────────────────────────────────────────────────
 
+_MD_IMAGE = re.compile(r'!\[.*?\]\(.*?\)')  # strips ![alt](url) from markdown output
+
+
 def extract_chapters(pdf_path: str) -> Tuple[List[Dict[str, str]], str]:
     """
-    Extract text from PDF, split into chapters using heading patterns.
-    Falls back to a single 'Document' section if no headings are found.
+    Extract text from PDF using pymupdf4llm (Markdown output), split into
+    chapters using heading patterns. Falls back to a single 'Document' section
+    if no headings are found.
 
     Returns (chapters, full_text).
     """
-    doc = fitz.open(pdf_path)
-    full_text = "\n\n".join(page.get_text() for page in doc)
-    doc.close()
+    full_text = pymupdf4llm.to_markdown(pdf_path)
+    full_text = _MD_IMAGE.sub("", full_text)  # remove image references
 
     chapter_pattern = re.compile(
-        r'(?m)^(Chapter\s+\d+[^\n]*|CHAPTER\s+\d+[^\n]*'
-        r'|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}|\d{1,2}\.\s+[A-Z][^\n]{3,})',
+        r'(?m)^('
+        r'#{1,3}\s+[^\n]+'                       # markdown headers: # / ## / ###
+        r'|Chapter\s+\d+[^\n]*'                  # "Chapter N ..."
+        r'|CHAPTER\s+\d+[^\n]*'
+        r'|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}'       # "1.1 Title"
+        r'|\d{1,2}\.\s+[A-Z][^\n]{3,}'          # "1. Title"
+        r')',
     )
 
     matches = list(chapter_pattern.finditer(full_text))

@@ -82,30 +82,62 @@ def retrieve_top_k(
     return [(doc, 1.0 - dist ** 2 / 2) for doc, dist in zip(docs, distances)]
 
 
+_SYSTEM_PROMPT = (
+    "You are a precise assistant. Answer the question using ONLY the information "
+    "provided in the context below. Do not use any external knowledge or information "
+    "from your training. If the answer is not present in the context, respond with "
+    "'The answer is not available in the provided context.'"
+)
+
+
+def build_messages(query: str, context_chunks: List[str]) -> List[Dict]:
+    """Return the prompt as a messages list suitable for apply_chat_template."""
+    context = "\n\n".join(
+        f"[Chunk {i+1}]:\n{chunk}" for i, chunk in enumerate(context_chunks)
+    )
+    return [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER:"},
+    ]
+
+
 def build_prompt(query: str, context_chunks: List[str]) -> str:
+    """Legacy plain-string prompt — kept for callers that do not use chat templates."""
     context = "\n\n".join(
         f"[Chunk {i+1}]:\n{chunk}" for i, chunk in enumerate(context_chunks)
     )
     return (
-        "You are a precise assistant. Answer the question using ONLY the information "
-        "provided in the context below. Do not use any external knowledge or information "
-        "from your training. If the answer is not present in the context, respond with "
-        "'The answer is not available in the provided context.'\n\n"
+        f"{_SYSTEM_PROMPT}\n\n"
         f"CONTEXT:\n{context}\n\n"
         f"QUESTION: {query}\n\n"
         "ANSWER:"
     )
 
 
+def _apply_chat_template_no_think(tokenizer: AutoTokenizer, messages: List[Dict]) -> str:
+    """Apply chat template with thinking disabled (Qwen3). Falls back gracefully for other models."""
+    try:
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+    except TypeError:
+        # Model tokenizer does not support enable_thinking (e.g. Qwen2.5)
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+
 def generate_answer(
-    prompt: str,
+    messages: List[Dict],
     tokenizer: AutoTokenizer,
     model: AutoModelForCausalLM,
     max_new_tokens: int = 512,
     temperature: float = 0.1,
     device: str = "cpu",
 ) -> str:
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
+    # Use chat template with thinking disabled so <think> tokens are never generated.
+    text = _apply_chat_template_no_think(tokenizer, messages)
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=2048).to(device)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -138,8 +170,8 @@ def rag(
     context_chunks = [doc for doc, _ in retrieved]
     scores = [score for _, score in retrieved]
 
-    prompt = build_prompt(query, context_chunks)
-    answer = generate_answer(prompt, agent.tokenizer, agent.model, max_new_tokens, temperature, device)
+    messages = build_messages(query, context_chunks)
+    answer = generate_answer(messages, agent.tokenizer, agent.model, max_new_tokens, temperature, device)
 
     return {
         "agent":            agent.name,

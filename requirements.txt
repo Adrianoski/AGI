@@ -2,12 +2,19 @@ gradio
 sentence-transformers
 chromadb
 PyMuPDF
+pymupdf4llm
 torch
+keybert
 transformers==4.32.1
 numpy==1.24.3
 scikit-learn==1.3.0
 langchain-text-splitters
 rank_bm25
+
+# Valutazione qualitativa RAG (evaluate_quality.py)
+ragas>=0.2
+langchain-openai
+langchain-huggingface
 
 # Opzionale — per la riduzione UMAP in extract_vectors.py
 # umap-learn

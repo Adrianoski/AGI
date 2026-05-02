@@ -11,13 +11,13 @@ import torch
 from chunking import process_pdf
 from router import (
     assign_chunks_auto, load_registry, merge_close_slms, find_top_n_slms,
-    migrate_centroids_to_summaries, refresh_all_summaries,
+    migrate_centroids_to_summaries, refresh_all_summaries, make_keybert_summary_fn,
 )
 import chromadb
 from sentence_transformers import SentenceTransformer
 import gradio as gr
 
-embedding_model = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+embedding_model = SentenceTransformer("BAAI/bge-m3")
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 # Migrazione lazy: converte SLM con centroide → summary embedding
@@ -77,8 +77,9 @@ def upload_and_chunk(pdf_file, collection_name):
     assignments, _strategy = assign_chunks_auto(chunks, embedding_model, col_name, chroma_client, threshold=0.55)
     merges = merge_close_slms(threshold=0.88, embedding_model=embedding_model, chroma_client=chroma_client)
 
-    n_refreshed = refresh_all_summaries(embedding_model, chroma_client)
-    summary_line = f"\n{n_refreshed} SLM summary generati con Qwen2.5-7B-Instruct."
+    keybert_fn = make_keybert_summary_fn(embedding_model)
+    n_refreshed = refresh_all_summaries(embedding_model, chroma_client, summary_fn=keybert_fn)
+    summary_line = f"\n{n_refreshed} SLM keyword estratte con KeyBERT."
 
     merge_line = f"\n{len(merges)} SLM uniti per prossimità." if merges else ""
     summary = (
@@ -204,8 +205,6 @@ def _generate_streaming(query: str, context_chunks: List[str], model_name: str, 
     """Loads the model once, then streams generated tokens via TextIteratorStreamer."""
     from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
     from threading import Thread
-    from SLMAgent import build_prompt
-
     global _model_cache
     if model_name not in _model_cache:
         dtype = torch.float16 if DEVICE == "cuda" else torch.float32
@@ -216,8 +215,9 @@ def _generate_streaming(query: str, context_chunks: List[str], model_name: str, 
         _model_cache[model_name] = (tok, mdl)
 
     tok, mdl = _model_cache[model_name]
-    prompt = build_prompt(query, context_chunks)
-    inputs = tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(DEVICE)
+    from SLMAgent import build_messages, _apply_chat_template_no_think
+    text = _apply_chat_template_no_think(tok, build_messages(query, context_chunks))
+    inputs = tok(text, return_tensors="pt", truncation=True, max_length=2048).to(DEVICE)
 
     streamer = TextIteratorStreamer(tok, skip_prompt=True, skip_special_tokens=True)
     gen_kwargs = {

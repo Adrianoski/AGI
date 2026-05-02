@@ -7,6 +7,7 @@ Secondary representation: summary_embedding (embedding of LLM-generated topic_su
 """
 
 import json
+import re
 import uuid
 import numpy as np
 from pathlib import Path
@@ -17,17 +18,18 @@ from sentence_transformers import SentenceTransformer
 REGISTRY_PATH = "registry.json"
 SLM_DATA_DIR = Path("slm_data")
 
-# NEW: Summary regeneration threshold
+# How often (in chunks added) the summary is refreshed during incremental ingestion.
 SLM_SUMMARY_EVERY_N: int = 20
 
-# NEW: Representative chunk selection
-TOP_REPRESENTATIVE: int = 20   # most central chunks used for summary
-TOP_DIVERSE: int = 5           # least central chunks added for coverage
+# Maximum total characters fed to the summary LLM across all chunk excerpts.
+# 4000 chars ≈ 1143 tokens; with ~200 token prompt + 80 token output = ~1423 tokens,
+# safely within the 2048-token limit used in _qwen_infer.
+MAX_EXCERPT_CHARS: int = 4000
 
 
 # Hardcoded summary LLM — always used, never configurable by the user
 SUMMARY_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
-
+#SUMMARY_MODEL: str = "Qwen/Qwen3.5-9B"
 # Model-agnostic summary function type.
 # Input:  list of chunk texts (representative subset)
 # Output: (topic_summary: str, keywords: List[str])
@@ -36,6 +38,20 @@ SummaryFn = Callable[[List[str]], Tuple[str, List[str]]]
 # Module-level cache: loaded once on first use
 _summary_tok = None
 _summary_mdl = None
+_kw_llm      = None   # KeyLLM TextGeneration instance, built from _summary_mdl
+
+_KW_PROMPT = (
+    "You are a knowledge indexing assistant.\n"
+    "I have the following document:\n[DOCUMENT]\n\n"
+    "Extract 10-15 specific keywords from the document above.\n"
+    "Use the same language as the document.\n"
+    "Include: named entities (people, places, battles, events), dates or historical periods, "
+    "factions, ideologies, movements, trade routes, concepts, technical terms.\n"
+    "Exclude: generic words like 'chapter', 'text', 'section', 'page', 'document', "
+    "'summary', 'list', 'approfondimenti', 'sintesi', 'mappe'.\n"
+    "Exclude: page numbers, formatting labels, index entries.\n"
+    "Return ONLY a comma-separated list of keywords:\n"
+)
 
 
 # ── I/O helpers ────────────────────────────────────────────────────────
@@ -84,56 +100,30 @@ def _update_centroid(
     return (vec / norm).tolist() if norm > 0 else vec.tolist()
 
 
-# ── NEW: Representative chunk selection ────────────────────────────────
+# ── All-chunk text retrieval ───────────────────────────────────────────
 
-def _select_representative_chunks(
+def _get_all_chunk_texts(
     chunk_ids: List[str],
-    centroid: np.ndarray,
     chroma_client,
     collection_name: str,
-    top_n: int = TOP_REPRESENTATIVE,
-    top_diverse: int = TOP_DIVERSE,
 ) -> List[str]:
     """
-    Select the most informative chunk texts for summary generation.
+    Retrieve the text of EVERY chunk in the cluster from ChromaDB.
 
-    Strategy:
-        - top_n chunks with highest cosine similarity to centroid (core coverage)
-        - top_diverse chunks with lowest similarity (boundary coverage)
+    Using all chunks (instead of a representative subset) ensures that the
+    keywords extracted by the summary LLM cover the full semantic breadth of
+    the cluster, not just its core or boundary.
 
     Returns:
-        List of chunk text strings (deduplicated, order not guaranteed).
+        List of chunk text strings in ChromaDB storage order.
     """
     try:
         col = chroma_client.get_collection(collection_name)
     except Exception:
         return []
 
-    data = col.get(ids=chunk_ids, include=["embeddings", "documents"])
-    embeddings = data.get("embeddings")
-    documents: List[str] = data.get("documents") or []
-
-    if embeddings is None or len(embeddings) == 0:
-        return []
-
-    c_norm = float(np.linalg.norm(centroid))
-    scored: List[Tuple[int, float]] = []
-
-    for i, emb in enumerate(embeddings):
-        e = np.array(emb, dtype=np.float32)
-        e_norm = float(np.linalg.norm(e))
-        sim = float(np.dot(centroid, e) / (c_norm * e_norm)) if (c_norm > 0 and e_norm > 0) else 0.0
-        scored.append((i, sim))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-
-    selected: set = set()
-    for idx, _ in scored[:top_n]:
-        selected.add(idx)
-    for idx, _ in scored[-top_diverse:]:
-        selected.add(idx)
-
-    return [documents[i] for i in selected if i < len(documents)]
+    data = col.get(ids=chunk_ids, include=["documents"])
+    return data.get("documents") or []
 
 
 def unload_summary_model() -> None:
@@ -144,7 +134,9 @@ def unload_summary_model() -> None:
     import gc
     import torch
 
-    global _summary_tok, _summary_mdl
+    global _summary_tok, _summary_mdl, _kw_llm
+
+    _kw_llm = None
 
     if _summary_mdl is not None:
         _summary_mdl.cpu()
@@ -164,10 +156,226 @@ def unload_summary_model() -> None:
 
 # ── Qwen summary function ──────────────────────────────────────────────
 
+def _qwen_infer(prompt: str, max_new_tokens: int) -> str:
+    """Single inference call to the cached Qwen model. Returns decoded output text."""
+    import torch
+
+    device = next(_summary_mdl.parameters()).device
+    inputs = _summary_tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
+    with torch.no_grad():
+        out = _summary_mdl.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=_summary_tok.eos_token_id,
+        )
+    return _summary_tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+
+
+_NOISE_PREFIXES = ("note:", "the summary", "the keyword", "a knowledge", "while the")
+
+# Italian + English stop words for KeyBERT and keyword filtering
+_COMBINED_STOPWORDS = [
+    # Italian articles, prepositions, conjunctions, pronouns
+    "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
+    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+    "e", "ed", "o", "ma", "se", "che", "non", "si",
+    "ai", "al", "del", "della", "dei", "degli", "delle",
+    "nel", "nella", "nei", "negli", "nelle",
+    "dal", "dalla", "dai", "dagli", "dalle",
+    "sul", "sulla", "sui", "sugli", "sulle",
+    "col", "coi", "allo", "alla", "agli", "alle",
+    "questo", "questa", "questi", "queste",
+    "quello", "quella", "quelli", "quelle",
+    "cui", "loro", "anche", "come", "più", "poi", "però",
+    "quando", "dove", "chi", "suo", "sua", "suoi", "sue",
+    "era", "erano", "fu", "furono", "è", "sono",
+    "molto", "tanto", "tutto", "tutti", "tutte", "tutta",
+    "ogni", "altro", "altra", "altri", "altre",
+    "già", "ancora", "sempre", "mai", "solo",
+    "vi", "ci", "mi", "ti", "ne", "li",
+    "verso", "dopo", "prima", "durante", "mentre",
+    "tale", "tali", "quanto", "nostro", "nostra",
+    # English
+    "the", "of", "and", "in", "to", "a", "is", "it", "its",
+    "by", "for", "or", "at", "be", "as", "an", "was", "are",
+    "with", "this", "that", "from", "on", "were", "not", "but",
+    "have", "had", "has", "he", "she", "they", "we",
+]
+
+# Single-word noise terms from book structure/index
+_NOISE_SINGLE_WORDS = frozenset([
+    "approfondimenti", "multimediali", "sintesi", "mappe", "concettuali",
+    "sezione", "volume", "capitolo", "pagina", "temi", "idea", "ricerca",
+    "premesse", "elenco", "presentazione", "immagini", "utilizzate",
+    "applicazioni", "caratteri", "protagonisti", "conseguenze", "invenzioni",
+    "protagonista", "riassunto", "riepilogo", "scheda", "glossario",
+])
+
+# PDF artifact prefixes (line-break markers, encoding artifacts)
+_KW_ARTIFACT_PREFIXES = ("br ", "c3 ", "c2 ", "br\n", "_")
+
+
+def _is_meaningful_kw(kw: str) -> bool:
+    """Return True if kw is a keyword worth keeping — not noise, not a fragment."""
+    kw = kw.strip()
+    if len(kw) < 4:
+        return False
+    # Starts with a digit (e.g. "18 organizzazione", "2media storia", "113 prussia")
+    if kw[0].isdigit():
+        return False
+    # Ends with a 2+ digit number after space (page refs: "restaurazione 153", "napoleon 146")
+    if re.search(r'\s\d{2,}$', kw):
+        return False
+    # PDF artifact prefixes
+    if any(kw.lower().startswith(p) for p in _KW_ARTIFACT_PREFIXES):
+        return False
+    words = kw.lower().split()
+    # All words are very short (e.g. "la xv", "il br", "dal xv")
+    if all(len(w) <= 2 for w in words):
+        return False
+    # Single-word structural noise
+    if len(words) == 1 and words[0] in _NOISE_SINGLE_WORDS:
+        return False
+    return True
+
+
+def _parse_raw_keywords(raw: str) -> List[str]:
+    """Parse a comma-separated keyword string, filtering out noise tokens."""
+    result: List[str] = []
+    for kw in raw.replace("\n", ",").split(","):
+        kw = kw.strip()
+        if not kw or len(kw) > 60:
+            continue
+        if kw.lower().startswith(_NOISE_PREFIXES):
+            continue
+        if not _is_meaningful_kw(kw):
+            continue
+        result.append(kw)
+    return result
+
+
+def make_keybert_summary_fn(
+    embedding_model=None,
+) -> "SummaryFn":
+    """
+    Return a SummaryFn that extracts keywords using KeyBERT.
+
+    Pass the already-loaded SentenceTransformer embedding_model to reuse it
+    instead of loading a separate copy.  If None, KeyBERT loads its default.
+
+    Extraction per chunk (1- and 2-gram, MMR for diversity), then aggregated
+    via _merge_keywords.
+    """
+    from keybert import KeyBERT
+
+    kw_model = KeyBERT(model=embedding_model) if embedding_model is not None else KeyBERT()
+    print(f"[router] KeyBERT inizializzato.")
+
+    def _fn(texts: List[str]) -> Tuple[str, List[str]]:
+        all_raw: List[str] = []
+        for text in texts:
+            if not text or not text.strip():
+                continue
+            results = kw_model.extract_keywords(
+                text,
+                keyphrase_ngram_range=(1, 2),
+                stop_words=_COMBINED_STOPWORDS,
+                use_mmr=True,
+                diversity=0.6,
+                top_n=10,
+            )
+            for kw, _score in results:
+                if _is_meaningful_kw(kw):
+                    all_raw.append(kw)
+        return "", _merge_keywords(all_raw)
+
+    return _fn
+
+
+def _merge_keywords(keywords: List[str]) -> List[str]:
+    """
+    Deduplicate and merge a flat list of keywords collected across all chunks.
+
+    Steps:
+      1. Case-insensitive dedup — count occurrences, keep the most common casing.
+      2. Substring absorption — if keyword A (normalized) is a substring of keyword B,
+         A is dropped and its count is added to B (the more specific form wins).
+      3. Sort by frequency descending so the most cross-chunk keywords come first.
+    """
+    # Step 1: normalize and count
+    freq: Dict[str, int] = {}       # norm → count
+    canonical: Dict[str, str] = {}  # norm → best original form (first seen)
+    for kw in keywords:
+        norm = kw.lower().strip().rstrip(".,;:")
+        if not norm:
+            continue
+        if norm not in freq:
+            freq[norm] = 0
+            canonical[norm] = kw
+        freq[norm] += 1
+
+    # Step 2: substring absorption (longer/more-specific absorbs shorter/generic)
+    norms = sorted(freq.keys(), key=len, reverse=True)  # longest first
+    absorbed: set = set()
+    for i, longer in enumerate(norms):
+        if longer in absorbed:
+            continue
+        for shorter in norms[i + 1:]:
+            if shorter in absorbed:
+                continue
+            if shorter in longer:  # e.g. "napoleon" ⊂ "napoleon bonaparte"
+                freq[longer] += freq[shorter]
+                absorbed.add(shorter)
+
+    # Step 3: build result sorted by frequency, apply final noise filter, cap at 30
+    result = [
+        (canonical[n], freq[n])
+        for n in norms
+        if n not in absorbed and _is_meaningful_kw(canonical[n])
+    ]
+    result.sort(key=lambda x: -x[1])
+    return [kw for kw, _ in result[:30]]
+
+
+# Maximum prompts per GPU forward pass.
+# RTX 4080 SUPER (16GB): Qwen2.5-7B float16 ≈ 14GB weights → ~2GB headroom.
+# KV cache per sequence at ~870 token (720 input + 150 output) ≈ 50MB → max ~16.
+# 8 is the safe ceiling accounting for PyTorch allocator fragmentation.
+KEYWORD_BATCH_SIZE: int = 8
+
+
+def _get_kw_pipe():
+    """
+    Build (or return cached) a HuggingFace text-generation pipeline
+    wrapping the already-loaded Qwen model.
+    Left-padding is forced so causal generation is correct when batch_size > 1.
+    """
+    from transformers import pipeline as hf_pipeline
+
+    global _kw_llm
+    if _kw_llm is not None:
+        return _kw_llm
+
+    _summary_tok.padding_side = "left"
+    _kw_llm = hf_pipeline(
+        "text-generation",
+        model=_summary_mdl,
+        tokenizer=_summary_tok,
+        do_sample=False,
+        pad_token_id=_summary_tok.eos_token_id,
+        max_new_tokens=150,
+        return_full_text=False,
+    )
+    return _kw_llm
+
+
 def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
     """
-    Generate topic_summary and keywords using Qwen2.5-7B-Instruct.
-    Model is loaded once and cached at module level.
+    Generate keywords for every chunk via GPU-batched HF pipeline inference.
+    All prompts are built upfront; the pipeline processes KEYWORD_BATCH_SIZE
+    prompts per forward pass (true GPU batching, not sequential).
+    Keywords from all chunks are aggregated and deduplicated by _merge_keywords.
     """
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -183,48 +391,55 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
             SUMMARY_MODEL, torch_dtype=dtype, trust_remote_code=True
         ).to(device).eval()
 
-    device = next(_summary_mdl.parameters()).device
-    excerpt = "\n\n".join(f"[Chunk {i+1}]: {t[:400]}" for i, t in enumerate(texts[:10]))
-    prompt = (
-        "You are a knowledge indexing assistant.\n"
-        "Given the following text chunks, extract:\n"
-        "1. A SUMMARY: one sentence describing the main topic.\n"
-        "2. KEYWORDS: 15-25 specific keywords for every chunk (comma-separated).\n"
-        "   IMPORTANT: always write keywords in ENGLISH, regardless of the source language.\n"
-        "   Include: named entities, technical terms, places, people, events, concepts.\n"
-        "   Do NOT include generic words like 'chapter', 'text', 'document'.\n\n"
-        f"CHUNKS:\n{excerpt}\n\n"
-        "SUMMARY:\n"
-    )
-    inputs = _summary_tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
-    with torch.no_grad():
-        out = _summary_mdl.generate(
-            **inputs,
-            max_new_tokens=150,
-            do_sample=migrate_centroids_to_summaries,
-            pad_token_id=_summary_tok.eos_token_id,
-        )
-    decoded = _summary_tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+    # ── SUMMARY (disabilitata) ─────────────────────────────────────────
+    # SUMMARY_SAMPLE = 20
+    # SUMMARY_CHARS  = 200
+    # if len(texts) <= SUMMARY_SAMPLE:
+    #     sample = texts
+    # else:
+    #     idxs = [round(i * (len(texts) - 1) / (SUMMARY_SAMPLE - 1)) for i in range(SUMMARY_SAMPLE)]
+    #     sample = [texts[i] for i in idxs]
+    # excerpt = "\n\n".join(f"[Chunk {i+1}]: {t[:SUMMARY_CHARS]}" for i, t in enumerate(sample))
+    # summary_prompt = (
+    #     "You are a knowledge indexing assistant.\n"
+    #     "Given the following text chunks, write ONE sentence describing the main topic.\n"
+    #     "Reply with the sentence only, no labels, no extra text.\n\n"
+    #     f"CHUNKS:\n{excerpt}\n\n"
+    #     "SUMMARY:\n"
+    # )
+    # topic_summary = _qwen_infer(summary_prompt, max_new_tokens=80)
+    # topic_summary = topic_summary.split("\n")[0].strip()
+    topic_summary = ""
 
-    topic_summary = decoded
-    keywords: List[str] = []
-    if "KEYWORDS:" in decoded:
-        parts = decoded.split("KEYWORDS:", 1)
-        topic_summary = parts[0].strip()
-        raw_keywords = [k.strip() for k in parts[1].replace("\n", ",").split(",") if k.strip()]
-        # Stop at first keyword that looks like Qwen self-commentary:
-        # - longer than 60 chars (not a keyword)
-        # - starts with "Note:" or "The " (meta-commentary pattern)
-        _noise_prefixes = ("note:", "the summary", "the keyword", "a knowledge", "while the")
-        clean: List[str] = []
-        for kw in raw_keywords:
-            if len(kw) > 60:
-                break
-            if kw.lower().startswith(_noise_prefixes):
-                break
-            clean.append(kw)
-        keywords = clean
+    # ── KEYWORDS via KeyLLM (sequential, un chunk per chiamata) ───────
+    # llm = _get_kw_llm()
+    # all_raw: List[str] = []
+    # BATCH = 8
+    # for batch_start in range(0, len(texts), BATCH):
+    #     batch = texts[batch_start: batch_start + BATCH]
+    #     batch_results = llm.extract_keywords(batch)
+    #     for chunk_kws in batch_results:
+    #         if not chunk_kws:
+    #             continue
+    #         for kw in chunk_kws:
+    #             kw_str = kw[0] if isinstance(kw, tuple) else kw
+    #             all_raw.extend(_parse_raw_keywords(kw_str))
 
+    # ── KEYWORDS via GPU batching diretto ─────────────────────────────
+    # Tutti i prompt vengono costruiti in anticipo sostituendo [DOCUMENT]
+    # col testo di ogni chunk. Il pipeline processa KEYWORD_BATCH_SIZE prompt
+    # per forward pass: più sequenze in parallelo sulla GPU invece di una
+    # alla volta come fa KeyLLM internamente.
+    pipe = _get_kw_pipe()
+    prompts = [_KW_PROMPT.replace("[DOCUMENT]", t) for t in texts]
+    all_raw: List[str] = []
+
+    outputs = pipe(prompts, batch_size=KEYWORD_BATCH_SIZE)
+    for out in outputs:
+        generated = out[0]["generated_text"]
+        all_raw.extend(_parse_raw_keywords(generated))
+
+    keywords = _merge_keywords(all_raw)
     return topic_summary, keywords
 
 
@@ -238,11 +453,14 @@ def update_slm_summary(
     summary_fn: Optional[SummaryFn] = None,
 ) -> None:
     """
-    Regenerate topic_summary and keywords for an SLM using representative chunks.
+    Regenerate topic_summary and keywords for an SLM using ALL chunks in the cluster.
     Always uses _qwen_summary_fn unless a custom summary_fn is passed.
+
+    All chunk texts are passed to the summary function so that keywords reflect
+    the full semantic content of the cluster, not just a representative subset.
     """
     if summary_fn is None:
-        summary_fn = _qwen_summary_fn
+        summary_fn = make_keybert_summary_fn()
     entry = registry[slm_name]
     chunks_path = Path(entry["chunks_json"])
     if not chunks_path.exists():
@@ -253,15 +471,13 @@ def update_slm_summary(
     if not chunk_ids:
         return
 
-    centroid = np.array(entry["centroid_embedding"], dtype=np.float32)
-    texts = _select_representative_chunks(
-        chunk_ids, centroid, chroma_client, entry["collection"]
-    )
+    # Fetch texts for every chunk in the cluster (no centroid-based filtering).
+    texts = _get_all_chunk_texts(chunk_ids, chroma_client, entry["collection"])
     if not texts:
         return
 
     topic_summary, keywords = summary_fn(texts)
-    if not topic_summary:
+    if not topic_summary and not keywords:
         return
 
     # Encode keywords as the routing vector — denser semantic signal than full sentences.
