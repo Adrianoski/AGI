@@ -102,26 +102,35 @@ def _per_sample(score_obj, key: str) -> list:
         return []
 
 
-def write_report(results, score_std, score_slm, metadata, output_path):
+def write_report(results, score_std, score_slm, score_full, metadata, output_path):
     col   = metadata.get("collection", "?")
     model = metadata.get("model", "?")
 
     # aggregate means
-    means_std = {k: _mean(score_std, k) for k in METRIC_KEYS}
-    means_slm = {k: _mean(score_slm, k) for k in METRIC_KEYS}
+    means_std  = {k: _mean(score_std,  k) for k in METRIC_KEYS}
+    means_slm  = {k: _mean(score_slm,  k) for k in METRIC_KEYS}
+    means_full = {k: _mean(score_full, k) for k in METRIC_KEYS}
 
     # per-sample scores
-    per_std = {k: _per_sample(score_std, k) for k in METRIC_KEYS}
-    per_slm = {k: _per_sample(score_slm, k) for k in METRIC_KEYS}
+    per_std  = {k: _per_sample(score_std,  k) for k in METRIC_KEYS}
+    per_slm  = {k: _per_sample(score_slm,  k) for k in METRIC_KEYS}
+    per_full = {k: _per_sample(score_full, k) for k in METRIC_KEYS}
 
     # efficiency aggregates from JSON
-    std_ret  = np.mean([r["std"]["t_ret_ms"] for r in results])
-    slm_ret  = np.mean([r["slm"]["t_ret_ms"] for r in results])
-    std_pool = np.mean([r["std"]["pool"]      for r in results])
-    slm_pool = np.mean([r["slm"]["pool"]      for r in results])
-    std_hr   = np.mean([r["std"]["keyword_hit_pct"] for r in results])
-    slm_hr   = np.mean([r["slm"]["keyword_hit_pct"] for r in results])
-    speedup  = std_ret / slm_ret if slm_ret > 0 else 0.0
+    std_ret   = np.mean([r["std"]["t_ret_ms"] for r in results])
+    slm_ret   = np.mean([r["slm"]["t_ret_ms"] for r in results])
+    full_ret  = np.mean([r["full"]["t_ret_ms"] for r in results])
+    std_gen   = np.mean([r["std"]["t_gen_ms"] for r in results])
+    slm_gen   = np.mean([r["slm"]["t_gen_ms"] for r in results])
+    full_gen  = np.mean([r["full"]["t_gen_ms"] for r in results])
+    std_pool  = np.mean([r["std"]["pool"]     for r in results])
+    slm_pool  = np.mean([r["slm"]["pool"]     for r in results])
+    full_pool = np.mean([r["full"]["pool"]    for r in results])
+    std_hr    = np.mean([r["std"]["keyword_hit_pct"]  for r in results])
+    slm_hr    = np.mean([r["slm"]["keyword_hit_pct"]  for r in results])
+    full_hr   = np.mean([r["full"]["keyword_hit_pct"] for r in results])
+    speedup_slm  = std_ret / slm_ret  if slm_ret  > 0 else 0.0
+    speedup_full = std_ret / full_ret if full_ret > 0 else 0.0
 
     with open(output_path, "w", encoding="utf-8") as f:
 
@@ -132,34 +141,41 @@ def write_report(results, score_std, score_slm, metadata, output_path):
 
         # ── Metriche di qualità ────────────────────────────────────────
         f.write("## Metriche di qualità (RAGAS)\n\n")
-        f.write("| Metrica | StdRAG | SLM-RAG | Δ (SLM−Std) |\n|---|---|---|---|\n")
+        f.write("| Metrica | StdRAG | SLM-RAG | SLM-Full | Δ (SLM−Std) | Δ (Full−Std) |\n")
+        f.write("|---|---|---|---|---|---|\n")
+
+        def _delta_str(a, b):
+            if math.isnan(a) or math.isnan(b):
+                return "—"
+            d = b - a
+            sign = "+" if d > 0 else ""
+            return f"{sign}{_fmt(d)}"
 
         for key, label in METRIC_KEYS.items():
             s  = means_std[key]
             sl = means_slm[key]
-            delta = sl - s if not (math.isnan(s) or math.isnan(sl)) else float("nan")
-            sign  = "+" if delta > 0 else ""
-            d_str = f"{sign}{_fmt(delta)}" if not math.isnan(delta) else "—"
-            f.write(f"| {label} | {_fmt(s)} | {_fmt(sl)} | {d_str} |\n")
+            fu = means_full[key]
+            f.write(f"| {label} | {_fmt(s)} | {_fmt(sl)} | {_fmt(fu)} "
+                    f"| {_delta_str(s, sl)} | {_delta_str(s, fu)} |\n")
 
         # Hallucination = 1 − Faithfulness
         faith_key = "faithfulness"
-        hall_std = 1 - means_std[faith_key] if not math.isnan(means_std[faith_key]) else float("nan")
-        hall_slm = 1 - means_slm[faith_key] if not math.isnan(means_slm[faith_key]) else float("nan")
-        delta_h  = hall_slm - hall_std if not (math.isnan(hall_std) or math.isnan(hall_slm)) else float("nan")
-        sign_h   = "+" if delta_h > 0 else ""
-        d_h_str  = f"{sign_h}{_fmt(delta_h)}" if not math.isnan(delta_h) else "—"
-        f.write(f"| Hallucination *(1−Faith)* | {_fmt(hall_std)} | {_fmt(hall_slm)} | {d_h_str} |\n")
+        hall_std  = 1 - means_std[faith_key]  if not math.isnan(means_std[faith_key])  else float("nan")
+        hall_slm  = 1 - means_slm[faith_key]  if not math.isnan(means_slm[faith_key])  else float("nan")
+        hall_full = 1 - means_full[faith_key] if not math.isnan(means_full[faith_key]) else float("nan")
+        f.write(f"| Hallucination *(1−Faith)* | {_fmt(hall_std)} | {_fmt(hall_slm)} | {_fmt(hall_full)} "
+                f"| {_delta_str(hall_std, hall_slm)} | {_delta_str(hall_std, hall_full)} |\n")
 
         f.write("\n---\n\n")
 
         # ── Metriche di efficienza ─────────────────────────────────────
         f.write("## Metriche di efficienza\n\n")
-        f.write("| Metrica | StdRAG | SLM-RAG |\n|---|---|---|\n")
-        f.write(f"| Retrieval medio | {std_ret:.1f} ms | {slm_ret:.1f} ms |\n")
-        f.write(f"| Pool medio | {std_pool:.0f} chunk | {slm_pool:.0f} chunk |\n")
-        f.write(f"| Speedup retrieval | — | **{speedup:.1f}x** |\n")
-        f.write(f"| Keyword hit | {std_hr:.0f}% | {slm_hr:.0f}% |\n")
+        f.write("| Metrica | StdRAG | SLM-RAG | SLM-Full |\n|---|---|---|---|\n")
+        f.write(f"| Retrieval medio | {std_ret:.1f} ms | {slm_ret:.1f} ms | {full_ret:.1f} ms |\n")
+        f.write(f"| Generazione media | {std_gen:.0f} ms | {slm_gen:.0f} ms | {full_gen:.0f} ms |\n")
+        f.write(f"| Pool medio | {std_pool:.0f} chunk | {slm_pool:.0f} chunk | {full_pool:.0f} chunk |\n")
+        f.write(f"| Speedup retrieval | — | **{speedup_slm:.1f}x** | **{speedup_full:.1f}x** |\n")
+        f.write(f"| Keyword hit | {std_hr:.0f}% | {slm_hr:.0f}% | {full_hr:.0f}% |\n")
 
         f.write("\n---\n\n")
 
@@ -171,27 +187,28 @@ def write_report(results, score_std, score_slm, metadata, output_path):
         ar = "response_relevancy"
         fa = "faithfulness"
 
-        header = (
-            "| # | Query | CP Std | CP SLM | CR Std | CR SLM "
-            "| AR Std | AR SLM | Faith Std | Faith SLM |\n"
+        f.write(
+            "| # | Query "
+            "| CP Std | CP SLM | CP Full "
+            "| CR Std | CR SLM | CR Full "
+            "| AR Std | AR SLM | AR Full "
+            "| Faith Std | Faith SLM | Faith Full |\n"
         )
-        f.write(header)
-        f.write("|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("|---|---|" + "---|" * 12 + "\n")
 
-        n = len(results)
         for i, r in enumerate(results):
             label = r["query_en"][:48] + ("…" if len(r["query_en"]) > 48 else "")
 
             def gs(key, src):
-                lst = per_std[key] if src == "std" else per_slm[key]
+                lst = {"std": per_std, "slm": per_slm, "full": per_full}[src][key]
                 return _fmt(lst[i]) if i < len(lst) else "—"
 
             f.write(
                 f"| {i+1} | {label} "
-                f"| {gs(cp,'std')} | {gs(cp,'slm')} "
-                f"| {gs(cr,'std')} | {gs(cr,'slm')} "
-                f"| {gs(ar,'std')} | {gs(ar,'slm')} "
-                f"| {gs(fa,'std')} | {gs(fa,'slm')} |\n"
+                f"| {gs(cp,'std')} | {gs(cp,'slm')} | {gs(cp,'full')} "
+                f"| {gs(cr,'std')} | {gs(cr,'slm')} | {gs(cr,'full')} "
+                f"| {gs(ar,'std')} | {gs(ar,'slm')} | {gs(ar,'full')} "
+                f"| {gs(fa,'std')} | {gs(fa,'slm')} | {gs(fa,'full')} |\n"
             )
 
         f.write("\n---\n\n")
@@ -204,6 +221,7 @@ def write_report(results, score_std, score_slm, metadata, output_path):
             f.write(f"**Ground Truth:** {r['ground_truth']}\n\n")
             f.write(f"**StdRAG:** {r['std']['answer']}\n\n")
             f.write(f"**SLM-RAG:** {r['slm']['answer']}\n\n")
+            f.write(f"**SLM-Full:** {r['full']['answer']}\n\n")
             f.write("---\n\n")
 
 
@@ -214,11 +232,11 @@ def main():
         description="Valutazione qualitativa RAG con RAGAS + Claude"
     )
     parser.add_argument(
-        "--input",  default="FINAL2PDF.json",
+        "--input",  default="final2PDF_3WAY.json",
         help="JSON prodotto da benchmark.py"
     )
     parser.add_argument(
-        "--output", default="final2PDF.md",
+        "--output", default="final2PDF_3WAY.md",
         help="File markdown di output"
     )
     args = parser.parse_args()
@@ -260,13 +278,16 @@ def main():
 
     # ── Valutazione ────────────────────────────────────────────────────
     print("\nValutazione StdRAG con RAGAS...")
-    score_std = run_ragas(build_samples(results, "std"), llm, embeddings)
+    score_std  = run_ragas(build_samples(results, "std"),  llm, embeddings)
 
     print("Valutazione SLM-RAG con RAGAS...")
-    score_slm = run_ragas(build_samples(results, "slm"), llm, embeddings)
+    score_slm  = run_ragas(build_samples(results, "slm"),  llm, embeddings)
+
+    print("Valutazione SLM-Full con RAGAS...")
+    score_full = run_ragas(build_samples(results, "full"), llm, embeddings)
 
     # ── Report ─────────────────────────────────────────────────────────
-    write_report(results, score_std, score_slm, metadata, args.output)
+    write_report(results, score_std, score_slm, score_full, metadata, args.output)
     print(f"\nReport salvato: {args.output}")
 
 

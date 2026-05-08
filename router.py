@@ -333,14 +333,14 @@ def _merge_keywords(keywords: List[str]) -> List[str]:
                 freq[longer] += freq[shorter]
                 absorbed.add(shorter)
 
-    # Step 3: build result sorted by frequency, apply final noise filter, cap at 30
+    # Step 3: build result sorted by frequency, apply final noise filter
     result = [
         (canonical[n], freq[n])
         for n in norms
         if n not in absorbed and _is_meaningful_kw(canonical[n])
     ]
     result.sort(key=lambda x: -x[1])
-    return [kw for kw, _ in result[:30]]
+    return [kw for kw, _ in result]
 
 
 # Maximum prompts per GPU forward pass.

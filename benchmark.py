@@ -27,7 +27,8 @@ RRF_K             = 60
 COLLECTION        = None                  # non usato — il benchmark cerca su tutte le collection
 GENERATION_MODEL  = "Qwen/Qwen3.5-4B"    # modello HuggingFace per la generazione
 MAX_NEW_TOKENS    = 256
-OUTPUT_FILE       = f"benchmark_answers_spacy_FINAL2PDF_25chapters_{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md"
+MAX_INPUT_TOKENS  = 131072                # 128K — Qwen3.5-4B nativo è 256K, niente rope scaling necessario
+OUTPUT_FILE       = f"benchmark_answers_spacy_4B_3_WAYS_2PDF_25chapters_{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md"
 
 QUERIES = [
     # ── ORIGINAL 10 ──────────────────────────────────────────────────────────
@@ -410,6 +411,31 @@ def retrieve_slm(query, q_emb, registry, chroma_client, top_k=TOP_K):
     return [all_chunks[i]["text"] for i in fused], len(all_chunks), elapsed
 
 
+# ── SLM-Full: routing + tutti i chunk del cluster (no retrieval interno) ──
+
+def retrieve_slm_full(query, q_emb, registry, chroma_client):
+    """Solo routing semantico: passa al LLM TUTTI i chunk dei top-N SLM,
+    senza ulteriore filtraggio dense/BM25 intra-cluster."""
+    t0 = time.perf_counter()
+
+    top_slms = find_top_n_slms(q_emb, registry, n=TOP_N_SLMS)
+
+    docs = []
+    for slm_name, _ in top_slms:
+        entry = registry[slm_name]
+        chunks_path = Path(entry["chunks_json"])
+        if not chunks_path.exists():
+            continue
+        with open(chunks_path) as f:
+            chunk_ids = [c["id"] for c in json.load(f)]
+        col = chroma_client.get_collection(entry["collection"])
+        data = col.get(ids=chunk_ids, include=["documents"])
+        docs.extend(data["documents"])
+
+    elapsed = (time.perf_counter() - t0) * 1000
+    return docs, len(docs), elapsed
+
+
 # ── Generation ────────────────────────────────────────────────────────
 
 _gen_tok = None
@@ -422,8 +448,9 @@ def _load_gen_model(model_name: str):
     if _gen_tok is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype  = torch.float16 if device == "cuda" else torch.float32
-        print(f"  Carico {model_name} su {device}...")
+        print(f"  Carico {model_name} su {device} (max_input_tokens={MAX_INPUT_TOKENS})...")
         _gen_tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        _gen_tok.model_max_length = MAX_INPUT_TOKENS
         _gen_mdl = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=dtype, trust_remote_code=True
         ).to(device).eval()
@@ -436,7 +463,7 @@ def generate(query: str, docs: list, model_name: str) -> str:
     device = next(_gen_mdl.parameters()).device
     # apply_chat_template with enable_thinking=False prevents <think> tokens at the source.
     text = _apply_chat_template_no_think(_gen_tok, build_messages(query, docs))
-    inputs = _gen_tok(text, return_tensors="pt", truncation=True, max_length=2048).to(device)
+    inputs = _gen_tok(text, return_tensors="pt", truncation=True, max_length=MAX_INPUT_TOKENS).to(device)
     with torch.no_grad():
         out = _gen_mdl.generate(
             **inputs,
@@ -467,9 +494,10 @@ def main():
         hits = sum(1 for kw in keywords if kw in joined)
         return hits / len(keywords) * 100 if keywords else 0.0
 
-    std_times, slm_times = [], []
-    std_pools, slm_pools = [], []
-    overlaps, std_hits, slm_hits = [], [], []
+    std_times, slm_times, full_times = [], [], []
+    std_pools, slm_pools, full_pools = [], [], []
+    std_gens,  slm_gens,  full_gens  = [], [], []
+    overlaps, std_hits, slm_hits, full_hits = [], [], [], []
     md_rows = []
 
     SEP = "=" * 110
@@ -484,25 +512,29 @@ def main():
             [query_it], normalize_embeddings=True, convert_to_numpy=True
         )[0].astype(np.float32)
 
-        docs_std, pool_std, t_std = retrieve_standard(query_it, q_emb, chroma_client)
-        docs_slm, pool_slm, t_slm = retrieve_slm(query_it, q_emb, registry, chroma_client)
+        docs_std,  pool_std,  t_std  = retrieve_standard(query_it, q_emb, chroma_client)
+        docs_slm,  pool_slm,  t_slm  = retrieve_slm(query_it, q_emb, registry, chroma_client)
+        docs_full, pool_full, t_full = retrieve_slm_full(query_it, q_emb, registry, chroma_client)
 
         overlap = len(set(docs_std[:TOP_K]) & set(docs_slm[:TOP_K])) / TOP_K * 100
-        hr_std  = hit_rate(docs_std, expected_kws)
-        hr_slm  = hit_rate(docs_slm, expected_kws)
+        hr_std  = hit_rate(docs_std,  expected_kws)
+        hr_slm  = hit_rate(docs_slm,  expected_kws)
+        hr_full = hit_rate(docs_full, expected_kws)
 
-        std_times.append(t_std); slm_times.append(t_slm)
-        std_pools.append(pool_std); slm_pools.append(pool_slm)
+        std_times.append(t_std);   slm_times.append(t_slm);   full_times.append(t_full)
+        std_pools.append(pool_std); slm_pools.append(pool_slm); full_pools.append(pool_full)
         overlaps.append(overlap)
-        std_hits.append(hr_std); slm_hits.append(hr_slm)
+        std_hits.append(hr_std);   slm_hits.append(hr_slm);   full_hits.append(hr_full)
 
         speedup = t_std / t_slm if t_slm > 0 else float("inf")
 
-        print(f"  Retrieval  —  StdRAG: {t_std:.1f}ms (pool={pool_std})  |  SLM-RAG: {t_slm:.1f}ms (pool={pool_slm})  speedup={speedup:.1f}x")
-        print(f"  Generazione StdRAG...")
-        t_gen0 = time.perf_counter()
+        print(f"  Retrieval  —  StdRAG: {t_std:.1f}ms (pool={pool_std})  |  "
+              f"SLM-RAG: {t_slm:.1f}ms (pool={pool_slm})  |  "
+              f"SLM-Full: {t_full:.1f}ms (pool={pool_full})  speedup={speedup:.1f}x")
         # Generazione: query EN per forzare risposte in inglese (Qwen 4B segue la lingua
         # della domanda; il system prompt da solo non basta su modelli piccoli).
+        print(f"  Generazione StdRAG...")
+        t_gen0 = time.perf_counter()
         ans_std = generate(query_en, docs_std, GENERATION_MODEL)
         t_gen_std = (time.perf_counter() - t_gen0) * 1000
 
@@ -511,9 +543,17 @@ def main():
         ans_slm = generate(query_en, docs_slm, GENERATION_MODEL)
         t_gen_slm = (time.perf_counter() - t_gen0) * 1000
 
-        print(f"  Gen times  —  StdRAG: {t_gen_std:.0f}ms  |  SLM-RAG: {t_gen_slm:.0f}ms")
-        print(f"  StdRAG : {ans_std[:100]}…")
-        print(f"  SLM-RAG: {ans_slm[:100]}…")
+        print(f"  Generazione SLM-Full...")
+        t_gen0 = time.perf_counter()
+        ans_full = generate(query_en, docs_full, GENERATION_MODEL)
+        t_gen_full = (time.perf_counter() - t_gen0) * 1000
+
+        std_gens.append(t_gen_std); slm_gens.append(t_gen_slm); full_gens.append(t_gen_full)
+
+        print(f"  Gen times  —  StdRAG: {t_gen_std:.0f}ms  |  SLM-RAG: {t_gen_slm:.0f}ms  |  SLM-Full: {t_gen_full:.0f}ms")
+        print(f"  StdRAG  : {ans_std[:100]}…")
+        print(f"  SLM-RAG : {ans_slm[:100]}…")
+        print(f"  SLM-Full: {ans_full[:100]}…")
 
         md_rows.append({
             "query_en":     query_en,
@@ -521,45 +561,59 @@ def main():
             "ground_truth": ground_truth,
             "ans_std":      ans_std,
             "ans_slm":      ans_slm,
+            "ans_full":     ans_full,
             "docs_std":     docs_std,
             "docs_slm":     docs_slm,
+            "docs_full":    docs_full,
             "t_ret_std":    t_std,
             "t_ret_slm":    t_slm,
+            "t_ret_full":   t_full,
             "t_gen_std":    t_gen_std,
             "t_gen_slm":    t_gen_slm,
+            "t_gen_full":   t_gen_full,
             "speedup":      speedup,
             "pool_std":     pool_std,
             "pool_slm":     pool_slm,
+            "pool_full":    pool_full,
             "hr_std":       hr_std,
             "hr_slm":       hr_slm,
+            "hr_full":      hr_full,
             "overlap":      overlap,
         })
 
     # ── Salva Markdown ─────────────────────────────────────────────────
-    avg_speedup    = np.mean(std_times) / np.mean(slm_times)
-    pool_reduction = (1 - np.mean(slm_pools) / np.mean(std_pools)) * 100
+    avg_speedup        = np.mean(std_times) / np.mean(slm_times)
+    avg_speedup_full   = np.mean(std_times) / np.mean(full_times) if np.mean(full_times) > 0 else 0.0
+    pool_reduction     = (1 - np.mean(slm_pools)  / np.mean(std_pools)) * 100
+    pool_reduction_full= (1 - np.mean(full_pools) / np.mean(std_pools)) * 100
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(f"# Benchmark RAG — {', '.join(col_names)}\n\n")
         f.write(f"**Modello:** {GENERATION_MODEL}  |  **top-k:** {TOP_K}  |  **top-N SLM:** {TOP_N_SLMS}\n\n")
-        f.write(f"| Metrica | StdRAG | SLM-RAG |\n|---|---|---|\n")
-        f.write(f"| Speedup retrieval | — | **{avg_speedup:.1f}x** |\n")
-        f.write(f"| Pool medio | {int(np.mean(std_pools))} chunk | {int(np.mean(slm_pools))} chunk (-{pool_reduction:.0f}%) |\n")
-        f.write(f"| Keyword hit | {np.mean(std_hits):.0f}% | **{np.mean(slm_hits):.0f}%** |\n")
-        f.write(f"| Overlap medio top-{TOP_K} | {np.mean(overlaps):.0f}% | — |\n\n")
+        f.write(f"| Metrica | StdRAG | SLM-RAG | SLM-Full |\n|---|---|---|---|\n")
+        f.write(f"| Speedup retrieval | — | **{avg_speedup:.1f}x** | **{avg_speedup_full:.1f}x** |\n")
+        f.write(f"| Pool medio | {int(np.mean(std_pools))} chunk "
+                f"| {int(np.mean(slm_pools))} chunk (-{pool_reduction:.0f}%) "
+                f"| {int(np.mean(full_pools))} chunk ({pool_reduction_full:+.0f}%) |\n")
+        f.write(f"| Generazione media | {np.mean(std_gens):.0f} ms | {np.mean(slm_gens):.0f} ms | {np.mean(full_gens):.0f} ms |\n")
+        f.write(f"| Keyword hit | {np.mean(std_hits):.0f}% | **{np.mean(slm_hits):.0f}%** | {np.mean(full_hits):.0f}% |\n")
+        f.write(f"| Overlap medio top-{TOP_K} (Std vs SLM) | {np.mean(overlaps):.0f}% | — | — |\n\n")
         f.write("---\n\n")
 
         for i, r in enumerate(md_rows, 1):
             f.write(f"## {i}. {r['query_en']}\n\n")
             f.write(f"*{r['query_it']}*\n\n")
-            f.write(f"| | StdRAG | SLM-RAG |\n|---|---|---|\n")
-            f.write(f"| **Retrieval** | {r['t_ret_std']:.1f} ms | {r['t_ret_slm']:.1f} ms ({r['speedup']:.1f}x) |\n")
-            f.write(f"| **Generazione** | {r['t_gen_std']:.0f} ms | {r['t_gen_slm']:.0f} ms |\n")
-            f.write(f"| **Totale** | {r['t_ret_std']+r['t_gen_std']:.0f} ms | {r['t_ret_slm']+r['t_gen_slm']:.0f} ms |\n")
-            f.write(f"| **Pool chunk** | {r['pool_std']} | {r['pool_slm']} |\n")
-            f.write(f"| **Keyword hit** | {r['hr_std']:.0f}% | {r['hr_slm']:.0f}% |\n\n")
+            f.write(f"| | StdRAG | SLM-RAG | SLM-Full |\n|---|---|---|---|\n")
+            f.write(f"| **Retrieval** | {r['t_ret_std']:.1f} ms | {r['t_ret_slm']:.1f} ms ({r['speedup']:.1f}x) | {r['t_ret_full']:.1f} ms |\n")
+            f.write(f"| **Generazione** | {r['t_gen_std']:.0f} ms | {r['t_gen_slm']:.0f} ms | {r['t_gen_full']:.0f} ms |\n")
+            f.write(f"| **Totale** | {r['t_ret_std']+r['t_gen_std']:.0f} ms "
+                    f"| {r['t_ret_slm']+r['t_gen_slm']:.0f} ms "
+                    f"| {r['t_ret_full']+r['t_gen_full']:.0f} ms |\n")
+            f.write(f"| **Pool chunk** | {r['pool_std']} | {r['pool_slm']} | {r['pool_full']} |\n")
+            f.write(f"| **Keyword hit** | {r['hr_std']:.0f}% | {r['hr_slm']:.0f}% | {r['hr_full']:.0f}% |\n\n")
             f.write(f"### Risposta StdRAG\n\n{r['ans_std']}\n\n")
             f.write(f"### Risposta SLM-RAG\n\n{r['ans_slm']}\n\n")
+            f.write(f"### Risposta SLM-Full\n\n{r['ans_full']}\n\n")
             f.write(f"### Ground Truth\n\n{r['ground_truth']}\n\n")
             f.write("---\n\n")
 
@@ -595,6 +649,14 @@ def main():
                     "pool":            r["pool_slm"],
                     "keyword_hit_pct": r["hr_slm"],
                 },
+                "full": {
+                    "chunks":          r["docs_full"],
+                    "answer":          r["ans_full"],
+                    "t_ret_ms":        r["t_ret_full"],
+                    "t_gen_ms":        r["t_gen_full"],
+                    "pool":            r["pool_full"],
+                    "keyword_hit_pct": r["hr_full"],
+                },
                 "overlap_pct": r["overlap"],
                 "speedup":     r["speedup"],
             }
@@ -605,11 +667,18 @@ def main():
         json.dump(json_data, f, ensure_ascii=False, indent=2)
     print(f"JSON salvato:  {json_path}")
     print(f"\nRIEPILOGO")
-    print(f"  Speedup retrieval     : {avg_speedup:.1f}x")
-    print(f"  Riduzione pool        : {pool_reduction:.1f}%  ({int(np.mean(std_pools))} → {int(np.mean(slm_pools))} chunk)")
+    print(f"  Speedup retrieval SLM-RAG  : {avg_speedup:.1f}x")
+    print(f"  Speedup retrieval SLM-Full : {avg_speedup_full:.1f}x")
+    print(f"  Pool medio  StdRAG  : {int(np.mean(std_pools))} chunk")
+    print(f"  Pool medio  SLM-RAG : {int(np.mean(slm_pools))} chunk  ({pool_reduction:+.0f}%)")
+    print(f"  Pool medio  SLM-Full: {int(np.mean(full_pools))} chunk  ({pool_reduction_full:+.0f}%)")
+    print(f"  Generazione StdRAG  : {np.mean(std_gens):.0f} ms")
+    print(f"  Generazione SLM-RAG : {np.mean(slm_gens):.0f} ms")
+    print(f"  Generazione SLM-Full: {np.mean(full_gens):.0f} ms")
     print(f"  Overlap medio top-{TOP_K}  : {np.mean(overlaps):.0f}%")
-    print(f"  Keyword hit StdRAG    : {np.mean(std_hits):.0f}%")
-    print(f"  Keyword hit SLM-RAG   : {np.mean(slm_hits):.0f}%")
+    print(f"  Keyword hit StdRAG  : {np.mean(std_hits):.0f}%")
+    print(f"  Keyword hit SLM-RAG : {np.mean(slm_hits):.0f}%")
+    print(f"  Keyword hit SLM-Full: {np.mean(full_hits):.0f}%")
 
 
 if __name__ == "__main__":
