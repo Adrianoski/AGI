@@ -18,483 +18,311 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 import chromadb
-
 from router import load_registry, find_top_n_slms
 
 # ── Config ─────────────────────────────────────────────────────────────
 TOP_N_SLMS        = 3
 TOP_K             = 5
 RRF_K             = 60
-COLLECTION        = None                  # None = usa la prima collection disponibile
+COLLECTION        = None                  # non usato — il benchmark cerca su tutte le collection
 GENERATION_MODEL  = "Qwen/Qwen3.5-4B"    # modello HuggingFace per la generazione
 MAX_NEW_TOKENS    = 256
-OUTPUT_FILE       = "benchmark_answers_keybert.md"
+OUTPUT_FILE       = f"benchmark_answers_spacy_FINAL2PDF_25chapters_{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md"
 
-# (query_en, query_it_for_bm25, expected_keywords_in_answer, ground_truth)
 QUERIES = [
     # ── ORIGINAL 10 ──────────────────────────────────────────────────────────
     (
         "Who imported spices into Europe during the Middle Ages?",
-        "da chi venivano importate le spezie in europa nel medioevo?",
+        "Chi importava le spezie in Europa nel Medioevo?",
         ["arabi", "veneziana", "mercanti", "spezie", "oriente", "monopolio"],
         (
-            "Il commercio delle spezie era controllato dai mercanti arabi insieme alla "
-            "repubblica veneziana, che detenevano il monopolio attraversando i territori "
-            "musulmani. I molteplici rischi del viaggio e i vari passaggi di mano "
-            "aumentavano considerevolmente il prezzo della merce."
+            "The spice trade was controlled by Arab merchants together with the "
+            "Venetian republic, who held the monopoly by crossing Muslim "
+            "territories. The many risks of the journey and the various changes "
+            "of hands considerably raised the price of the goods."
         ),
     ),
     (
         "What territories did Charles V control?",
-        "quali territori controllava Carlo V?",
+        "Quali territori controllava Carlo V?",
         ["carlo", "spagna", "impero", "asburgo", "fiandre", "napoli"],
         (
-            "Carlo V controllava un vasto impero che comprendeva la Spagna, i territori "
-            "asburgici, le Fiandre, il Regno di Napoli e le colonie americane. Il suo "
-            "regno fu segnato da conflitti con la Francia, i principi tedeschi luterani "
-            "e l'impero ottomano."
+            "Charles V controlled a vast empire that included Spain, the "
+            "Habsburg territories, Flanders, the Kingdom of Naples, and the "
+            "American colonies. His reign was marked by conflicts with France, "
+            "the Lutheran German princes, and the Ottoman Empire."
         ),
     ),
     (
         "What were the main causes of the French Revolution?",
-        "quali furono le cause della rivoluzione francese?",
+        "Quali furono le principali cause della Rivoluzione Francese?",
         ["crisi", "stato", "terzo", "nobiltà", "tasse", "assemblea"],
         (
-            "Le principali cause della Rivoluzione Francese furono la crisi economica "
-            "dell'Ancien Régime, le ingiustizie fiscali che gravavano sul terzo stato, "
-            "la convocazione degli Stati Generali e la crescente influenza dell'opinione "
-            "pubblica. La nobiltà e il clero godevano di privilegi fiscali che "
-            "alimentavano il malcontento popolare."
-        ),
-    ),
-    (
-        "How did James Watt's steam engine work?",
-        "come funzionava la macchina a vapore di james watt?",
-        ["vapore", "watt", "carbone", "industria", "energia", "tessitura"],
-        (
-            "James Watt impiegò la macchina a vapore nella tessitura, nell'estrazione "
-            "dei minerali e nella loro lavorazione (siderurgia). Il vapore veniva "
-            "prodotto grazie all'utilizzo del carbone, per cui le attività industriali "
-            "dovevano svilupparsi vicino alle miniere."
+            "The main causes of the French Revolution were the economic crisis "
+            "of the Ancien Régime, the fiscal injustices that burdened the third "
+            "estate, the convening of the Estates General, and the growing "
+            "influence of public opinion. The nobility and clergy enjoyed fiscal "
+            "privileges that fuelled popular discontent."
         ),
     ),
     (
         "What were the key principles of the Enlightenment?",
-        "quali erano i principi fondamentali dell'illuminismo?",
+        "Quali erano i principi fondamentali dell'Illuminismo?",
         ["ragione", "philosophes", "libertà", "progresso", "lume", "diritti"],
         (
-            "L'Illuminismo si fondava sul primato del 'lume naturale' della ragione come "
-            "strumento di conoscenza e critica della realtà. I philosophes propugnavano "
-            "una nuova visione dell'economia e della politica basata sulla libertà, sul "
-            "progresso e sui diritti naturali dell'individuo."
-        ),
-    ),
-    (
-        "What was the American Revolution?",
-        "che cosa fu la rivoluzione americana?",
-        ["colonie", "indipendenza", "inglesi", "america", "tasse", "dichiarazione"],
-        (
-            "La Rivoluzione Americana fu il processo con cui le tredici colonie "
-            "americane si ribellarono al dominio inglese, principalmente a causa delle "
-            "difficili condizioni economiche e fiscali imposte dalla madrepatria. Nel "
-            "1776 fu stilata la Dichiarazione d'Indipendenza; la sconfitta inglese fu "
-            "sancita dalla pace di Parigi del 1783, che diede vita al nuovo stato "
-            "federale americano."
+            "The Enlightenment was founded on the primacy of the 'natural light' "
+            "of reason as a tool for knowledge and criticism of reality. The "
+            "philosophes advocated a new vision of economics and politics based "
+            "on freedom, progress, and the natural rights of the individual."
         ),
     ),
     (
         "Who were the Mongols and how did they expand?",
-        "chi erano i mongoli e come si espansero?",
+        "Chi erano i Mongoli e come si espansero?",
         ["mongoli", "gengis", "khan", "asia", "impero", "tartari"],
         (
-            "I Mongoli erano un popolo di cavalieri guidati da Gengis Khan, che scatenò "
-            "la sua offensiva verso la Cina oltrepassando la Grande Muraglia, poi occupò "
-            "le steppe della Russia meridionale, conquistò Samarcanda e Bukara e attaccò "
-            "Persia, Georgia e Bulgaria. Erano chiamati Tartari dagli europei. Dopo la "
-            "sua morte il regno fu diviso tra i quattro figli, dando origine a quattro Khanati."
+            "The Mongols were a people of horsemen led by Genghis Khan, who "
+            "launched his offensive toward China by crossing the Great Wall, "
+            "then occupied the steppes of southern Russia, conquered Samarkand "
+            "and Bukhara, and attacked Persia, Georgia, and Bulgaria. They were "
+            "called Tartars by Europeans. After his death the kingdom was "
+            "divided among his four sons, giving rise to four Khanates."
         ),
     ),
     (
         "What was Luther's Protestant Reformation?",
-        "che cosa fu la riforma protestante di lutero?",
+        "Che cos'era la Riforma protestante di Lutero?",
         ["lutero", "chiesa", "bibbia", "riforma", "fede", "protestante"],
         (
-            "La Riforma protestante di Lutero segnò una rottura definitiva con la "
-            "dottrina cattolica, ribadita nella Confessione Augustana presentata da "
-            "Filippo Melantone alla Dieta di Augusta del 1530. La pace di Augusta del "
-            "1555 riconobbe ufficialmente la religione protestante stabilendo il "
-            "principio 'cuius regio eius religio'."
+            "Luther's Protestant Reformation marked a definitive break with "
+            "Catholic doctrine, reaffirmed in the Augsburg Confession presented "
+            "by Philip Melanchthon at the Diet of Augsburg in 1530. The Peace of "
+            "Augsburg of 1555 officially recognised the Protestant religion by "
+            "establishing the principle 'cuius regio eius religio'."
         ),
     ),
     (
         "How was the Italian state formed during the Risorgimento?",
-        "come si formò lo stato italiano nel risorgimento?",
+        "Come si formò lo Stato italiano durante il Risorgimento?",
         ["cavour", "garibaldi", "mazzini", "unità", "piemonte", "italia"],
         (
-            "L'unità d'Italia fu il risultato del Risorgimento, guidato da figure come "
-            "Mazzini (fondatore della Giovine Italia), Cavour (che condusse la politica "
-            "diplomatica e la Seconda guerra d'Indipendenza) e Garibaldi (che guidò la "
-            "Spedizione dei Mille). Il Piemonte fu il fulcro del processo unitario."
+            "Italian unification was the result of the Risorgimento, led by "
+            "figures such as Mazzini (founder of Young Italy), Cavour (who "
+            "conducted diplomatic policy and the Second War of Independence), "
+            "and Garibaldi (who led the Expedition of the Thousand). Piedmont "
+            "was the fulcrum of the unification process."
         ),
     ),
     (
         "What were the social consequences of the Industrial Revolution?",
-        "quali furono le conseguenze sociali della rivoluzione industriale?",
+        "Quali furono le conseguenze sociali della Rivoluzione Industriale?",
         ["operai", "fabbriche", "lavoro", "proletariato", "borghesia", "sfruttamento"],
         (
-            "La Rivoluzione Industriale determinò la nascita del proletariato operaio, "
-            "che lavorava in fabbriche in condizioni di sfruttamento. Si accentuò la "
-            "divisione tra borghesia proprietaria e classe operaia. Gli effetti negativi "
-            "dell'industrializzazione includevano orari di lavoro estenuanti e condizioni "
-            "igieniche precarie."
+            "The Industrial Revolution brought about the birth of the "
+            "working-class proletariat, who worked in factories under "
+            "exploitative conditions. The divide between the property-owning "
+            "bourgeoisie and the working class deepened. The negative effects of "
+            "industrialisation included exhausting working hours and poor "
+            "sanitary conditions."
         ),
     ),
 
     # ── NUOVE 30 ─────────────────────────────────────────────────────────────
     (
         "How did the population of Europe change from the year 1000 to the 14th century?",
-        "come cambiò la popolazione europea dall'anno Mille al Trecento?",
+        "Come cambiò la popolazione europea dall'anno 1000 al XIV secolo?",
         ["popolazione", "raddoppiando", "40 milioni", "80 milioni", "carestie", "disboscare"],
         (
-            "La popolazione europea aumentò dall'anno Mille fino all'inizio del Trecento, "
-            "raddoppiando da circa 40 milioni a circa 80 milioni di abitanti. Questo "
-            "comportò la necessità di disboscare nuovi terreni per aumentare la "
-            "produzione, anche se si verificarono ciclicamente carestie decennali che "
-            "causarono migliaia di vittime."
+            "The European population grew from the year 1000 until the beginning "
+            "of the fourteenth century, doubling from around 40 million to "
+            "around 80 million inhabitants. This made it necessary to clear new "
+            "land to increase agricultural production, although cyclical famines "
+            "occurring every decade caused thousands of deaths."
         ),
     ),
     (
         "How did the plague spread from Crimea to Europe?",
-        "come si diffuse la peste dalla Crimea all'Europa?",
+        "Come si diffuse la peste dalla Crimea all'Europa?",
         ["crimea", "genovesi", "catapulte", "cadaveri", "genova", "venezia", "sicilia"],
         (
-            "La prima epidemia di peste scoppiò in una colonia genovese in Crimea "
-            "assediata dai Tartari, che lanciarono con le catapulte cadaveri infettati "
-            "oltre le mura. I cittadini genovesi in fuga portarono il contagio via mare. "
-            "Intorno al 1347 la peste raggiunse Genova, Venezia e la Sicilia, dilagando "
-            "l'anno successivo in Toscana, Francia, Inghilterra, Spagna e Germania. "
-            "Nel 1353 aveva ucciso circa un terzo della popolazione europea."
-        ),
-    ),
-    (
-        "What is the difference between bubonic plague and pneumonic plague?",
-        "qual è la differenza tra peste bubbonica e peste polmonare?",
-        ["bubbonica", "bubboni", "tumefazioni", "polmonare", "emorragie", "chiazze"],
-        (
-            "La peste bubbonica si presentava sotto forma di tumefazioni chiamate "
-            "bubboni. La peste polmonare, detta anche peste nera, provocava invece "
-            "emorragie cutanee che, rapprendosi, formavano chiazze nere sulla pelle."
-        ),
-    ),
-    (
-        "How was the plague transmitted from animals to humans?",
-        "come veniva trasmessa la peste dagli animali all'uomo?",
-        ["pulce", "ratti", "bacillo", "sangue", "topi", "igieniche", "promiscuità"],
-        (
-            "Il bacillo della peste era presente nei ratti. Era la pulce che, succhiando "
-            "il sangue dei topi infetti, trasmetteva la malattia agli esseri umani. "
-            "Le cattive condizioni igieniche e la promiscuità in cui vivevano gli esseri "
-            "umani aumentavano ulteriormente la contaminazione."
+            "The first epidemic of plague broke out in a Genoese colony in "
+            "Crimea besieged by the Tartars, who hurled infected corpses over "
+            "the walls using catapults. Genoese citizens fleeing the siege "
+            "spread the contagion by sea. Around 1347 the plague reached Genoa, "
+            "Venice, and Sicily, spreading the following year to Tuscany, "
+            "France, England, Spain, and Germany. By 1353 it had killed "
+            "approximately one third of the European population."
         ),
     ),
     (
         "Who were blamed for spreading the plague and what happened to them?",
-        "chi fu accusato di diffondere la peste e cosa accadde?",
+        "Chi fu accusato di diffondere la peste e cosa accadde loro?",
         ["ebrei", "pogrom", "pozzi", "capro espiatorio", "emarginati", "lebbrosi"],
         (
-            "Come capri espiatori furono indicati emarginati, lebbrosi e soprattutto "
-            "gli Ebrei, accusati di avvelenare l'acqua dei pozzi o di contaminare "
-            "l'aria con veleni. Di conseguenza migliaia di ebrei subirono persecuzioni "
-            "— i pogrom — in Francia, Germania e Svizzera."
-        ),
-    ),
-    (
-        "Who was Joan of Arc and what role did she play in the Hundred Years' War?",
-        "chi era Giovanna d'Arco e quale ruolo ebbe nella Guerra dei Cent'anni?",
-        ["giovanna", "orléans", "voci", "carlo vii", "rouen", "rogo", "diciannove"],
-        (
-            "Giovanna d'Arco era una giovane contadina analfabeta della Champagne che "
-            "affermava di sentire voci attribuite all'Arcangelo Michele. Presentatasi "
-            "a Carlo VII, guidò l'esercito alla conquista di Orléans e il re fu "
-            "incoronato a Reims. Fu catturata dagli inglesi e condannata al rogo per "
-            "eresia a soli diciannove anni nella piazza di Rouen."
-        ),
-    ),
-    (
-        "When did the Hundred Years' War start and end, and what caused it?",
-        "quando iniziò e finì la Guerra dei Cent'anni e quale ne fu la causa?",
-        ["1337", "1453", "filippo vi", "edoardo", "feudi", "valois"],
-        (
-            "La Guerra dei Cent'anni durò dal 1337 al 1453 non continuativamente. "
-            "Fu scatenata dal tentativo di Filippo VI (Valois) di appropriarsi dei "
-            "feudi inglesi sul suolo francese, provocando la reazione di Edoardo III "
-            "d'Inghilterra."
-        ),
-    ),
-    (
-        "How did Columbus persuade the Spanish monarchs to fund his voyage?",
-        "come convinse Colombo i sovrani spagnoli a finanziare il suo viaggio?",
-        ["isabella", "ferdinando", "toscanelli", "sferica", "occidente", "crociata"],
-        (
-            "Dopo il rifiuto del Portogallo, Colombo si rivolse a Isabella di Castiglia "
-            "e Ferdinando d'Aragona. I sovrani, appena conclusa la Reconquista, "
-            "accettarono attratti dalla possibilità di trovare oro nelle Indie per "
-            "finanziare una nuova crociata. Il progetto era basato sulla teoria di "
-            "Toscanelli secondo cui la Terra era sferica e si poteva raggiungere "
-            "l'oriente navigando verso occidente."
-        ),
-    ),
-    (
-        "From which port did Columbus depart and when?",
-        "da quale porto partì Colombo e quando?",
-        ["palos", "agosto", "1492", "caravelle", "pinta", "nina"],
-        (
-            "Il 3 agosto 1492 dal porto di Palos partirono tre caravelle: due di piccola "
-            "stazza battezzate la Pinta e la Niña, e la nave ammiraglia Santa María."
+            "Scapegoats included the marginalised, lepers, and above all Jews, "
+            "who were accused of poisoning well water or of contaminating the "
+            "air with poisons. As a result, thousands of Jews were persecuted — "
+            "in pogroms — across France, Germany, and Switzerland."
         ),
     ),
     (
         "Who was Henry the Navigator and what was his contribution to exploration?",
-        "chi era Enrico il Navigatore e qual è il suo contributo all'esplorazione?",
+        "Chi era Enrico il Navigatore e qual fu il suo contributo all'esplorazione?",
         ["enrico il navigatore", "sagres", "caravella", "algarve", "venti", "atlantico"],
         (
-            "Enrico il Navigatore era il re del Portogallo che fondò una scuola nautica "
-            "nella sua residenza di Capo di Sagres nell'Algarve. Lì si raccoglievano "
-            "informazioni su maree, venti e sull'Oceano Atlantico. Favorì la "
-            "sostituzione della galera con la più maneggevole caravella e avviò "
-            "le esplorazioni portoghesi verso le Azzorre e la circumnavigazione dell'Africa."
-        ),
-    ),
-    (
-        "Who was Bartolomeo Díaz and why did he not complete his voyage?",
-        "chi era Bartolomeo Diaz e perché non completò il suo viaggio?",
-        ["diaz", "buona speranza", "1487", "ammutinamento", "capo", "circumnavigazione"],
-        (
-            "Bartolomeo Diaz era un ammiraglio portoghese che nel 1487 raggiunse il "
-            "Capo di Buona Speranza ma non lo doppiò a causa dell'ammutinamento "
-            "dei suoi marinai."
-        ),
-    ),
-    (
-        "What was the triangular trade and why was it ethically problematic?",
-        "cos'era il commercio triangolare e perché era eticamente problematico?",
-        ["triangolare", "schiavi", "africa", "tabacco", "cotone", "tratta"],
-        (
-            "Il commercio triangolare prevedeva tre tappe: partenza dall'Europa con "
-            "armi, alcol e suppellettili; sosta in Africa dove si acquistavano schiavi "
-            "sfruttando le rivalità tribali; arrivo in America dove gli schiavi erano "
-            "venduti in cambio di tabacco, cotone e canna da zucchero che tornavano "
-            "in Europa. Generava enormi ricchezze ma pose le basi per la tratta "
-            "degli schiavi, una grave ingiustizia storica."
-        ),
-    ),
-    (
-        "What new food products did Europe import from the Americas after 1492?",
-        "quali nuovi prodotti alimentari arrivarono in Europa dalle Americhe dopo il 1492?",
-        ["mais", "patata", "pomodoro", "fagiolo", "tacchino", "tabacco"],
-        (
-            "Tra i prodotti agricoli importati dall'America ricordiamo: mais, girasole, "
-            "peperone, patata, fagiolo, pomodoro e tabacco. Tra le specie animali "
-            "giunsero il tacchino, il cincillà, il visone americano e la trota arcobaleno."
-        ),
-    ),
-    (
-        "What happened at the Diet of Augsburg in 1530?",
-        "cosa accadde alla Dieta di Augusta del 1530?",
-        ["augusta", "melantone", "luterane", "rottura", "cattolica", "lega"],
-        (
-            "Alla Dieta di Augusta del 1530 partecipò Filippo Melantone, portavoce di "
-            "Lutero, che presentò la Confessione Augustana in cui furono ribadite le "
-            "tesi luterane, sancendo la definitiva rottura con la dottrina cattolica. "
-            "I principi tedeschi luterani avevano intanto costituito la Lega di "
-            "Smalcalda in funzione anti-imperiale."
-        ),
-    ),
-    (
-        "What did the Peace of Augsburg of 1555 establish?",
-        "cosa stabilì la pace di Augusta del 1555?",
-        ["cuius regio", "1555", "principe", "religione", "emigrare", "protestante"],
-        (
-            "La pace di Augusta del 1555 riconobbe ufficialmente la religione "
-            "protestante e stabilì il principio 'cuius regio eius religio': ogni "
-            "principe tedesco poteva scegliere la propria religione e i sudditi erano "
-            "tenuti ad uniformarsi. A chi non volesse aderire era concesso il diritto "
-            "di emigrare."
+            "Henry the Navigator was the king of Portugal who founded a naval "
+            "school at his residence at Cape Sagres in the Algarve. There, "
+            "information was gathered on tides, winds, and the Atlantic Ocean. "
+            "He promoted the replacement of the galley with the more "
+            "manoeuvrable caravel and launched Portuguese explorations toward "
+            "the Azores and the circumnavigation of Africa."
         ),
     ),
     (
         "What was Calvin's doctrine of predestination?",
-        "qual era la dottrina calvinista della predestinazione?",
+        "Qual era la dottrina della predestinazione di Calvino?",
         ["predestinazione", "eletti", "dannati", "calvino", "grazia", "paradiso"],
         (
-            "Calvino affermava la sovranità assoluta di Dio sull'uomo e la dottrina "
-            "della predestinazione: l'umanità è divisa in eletti, destinati al "
-            "Paradiso, e dannati. L'uomo con la sua natura imperfetta non può "
-            "salvarsi per propria fede; è Dio a predestinarlo alla salvezza. "
-            "Calvino riconobbe come sacramenti validi solo il battesimo e l'eucaristia."
+            "Calvin affirmed the absolute sovereignty of God over humanity and "
+            "the doctrine of predestination: mankind is divided into the elect, "
+            "destined for Heaven, and the damned. With his imperfect nature, man "
+            "cannot save himself through his own faith; it is God who "
+            "predestines him to salvation. Calvin recognised only baptism and "
+            "the Eucharist as valid sacraments."
         ),
     ),
     (
         "What was England's Glorious Revolution?",
-        "cos'era la Gloriosa Rivoluzione inglese?",
+        "Che cos'era la Gloriosa Rivoluzione inglese?",
         ["gloriosa rivoluzione", "inghilterra", "parlamento", "sovrano", "costituzionale"],
         (
-            "La Gloriosa Rivoluzione inglese è descritta nel contesto del passaggio "
-            "dall'assolutismo verso forme più costituzionali di governo in Inghilterra "
-            "nel Seicento, in cui il parlamento limitò il potere assoluto del sovrano."
+            "The Glorious Revolution in England is described in the context of "
+            "the transition from absolutism toward more constitutional forms of "
+            "government in seventeenth-century England, in which Parliament "
+            "limited the absolute power of the sovereign."
         ),
     ),
     (
         "What were the main features of the First Industrial Revolution?",
-        "quali furono le caratteristiche principali della Prima Rivoluzione Industriale?",
+        "Quali furono le principali caratteristiche della Prima Rivoluzione Industriale?",
         ["rivoluzione industriale", "fabbrica", "operai", "carbone", "watt", "inghilterra"],
         (
-            "La Prima Rivoluzione Industriale fu caratterizzata dall'introduzione di "
-            "nuove tecnologie come la macchina a vapore di James Watt, dalla nascita "
-            "della fabbrica come luogo di produzione accentrata, dall'uso massiccio "
-            "del carbone e dalla trasformazione dei rapporti sociali con la nascita "
-            "del proletariato operaio."
+            "The First Industrial Revolution was characterised by the "
+            "introduction of new technologies such as James Watt's steam engine, "
+            "the emergence of the factory as a centre of concentrated "
+            "production, the massive use of coal, and the transformation of "
+            "social relations with the birth of the working-class proletariat."
         ),
     ),
     (
         "Who were the philosophes and what was their central idea?",
-        "chi erano i philosophes e qual era la loro idea centrale?",
+        "Chi erano i philosophes e qual era la loro idea centrale?",
         ["philosophes", "ragione", "lume", "conoscenza", "critica", "illuminismo"],
         (
-            "I philosophes erano i pensatori dell'Illuminismo che sostenevano il "
-            "primato del 'lume naturale' della ragione come strumento di conoscenza "
-            "e critica della realtà sociale e politica. Proponevano una nuova visione "
-            "dell'economia e della politica fondata sui diritti naturali e sul progresso."
-        ),
-    ),
-    (
-        "Who was Catherine II of Russia and why is she considered an enlightened despot?",
-        "chi era Caterina II di Russia e perché è considerata un despota illuminato?",
-        ["caterina", "russia", "re filosofi", "illuminati", "assolutismo"],
-        (
-            "Caterina II di Russia è descritta tra i cosiddetti 're filosofi', sovrani "
-            "che cercarono di applicare i principi illuministi al governo mantenendo "
-            "però il potere assoluto. È inserita, insieme a Giuseppe II d'Austria e "
-            "Federico II di Prussia, tra i rappresentanti del dispotismo illuminato."
+            "The philosophes were the thinkers of the Enlightenment who "
+            "championed the primacy of the 'natural light' of reason as a tool "
+            "for knowledge and criticism of social and political reality. They "
+            "proposed a new vision of economics and politics grounded in natural "
+            "rights and progress."
         ),
     ),
     (
         "What were the economic causes of the French Revolution?",
-        "quali furono le cause economiche della Rivoluzione Francese?",
+        "Quali furono le cause economiche della Rivoluzione Francese?",
         ["crisi economica", "ancien regime", "stati generali", "terzo stato", "debito"],
         (
-            "La crisi economica è individuata come una delle principali premesse della "
-            "Rivoluzione Francese. L'Ancien Régime era caratterizzato da privilegi "
-            "fiscali per nobiltà e clero, mentre il peso delle tasse gravava sul terzo "
-            "stato. La convocazione degli Stati Generali fu una risposta diretta a "
-            "questa crisi finanziaria."
-        ),
-    ),
-    (
-        "When was the Bastille stormed and what did it symbolize?",
-        "quando fu presa la Bastiglia e cosa simboleggiò?",
-        ["bastiglia", "14 luglio", "1789", "rivoluzione", "popolo", "simbolo"],
-        (
-            "La Bastiglia fu presa il 14 luglio 1789. L'evento rappresentò una svolta "
-            "simbolica della Rivoluzione Francese, segnando il passaggio dall'azione "
-            "delle assemblee all'azione popolare diretta contro il potere monarchico."
+            "The economic crisis is identified as one of the main preconditions "
+            "of the French Revolution. The Ancien Régime was characterised by "
+            "fiscal privileges for the nobility and clergy, while the burden of "
+            "taxation fell on the third estate. The convening of the Estates "
+            "General was a direct response to this financial crisis."
         ),
     ),
     (
         "What was the War of the Vendée during the French Revolution?",
-        "cos'era la guerra della Vandea durante la Rivoluzione Francese?",
+        "Che cos'era la guerra della Vandea durante la Rivoluzione Francese?",
         ["vandea", "rivoluzionari", "guerra", "interna", "controrivoluzione"],
         (
-            "La guerra della Vandea fu una delle difficoltà interne della Rivoluzione "
-            "Francese: un conflitto civile che oppose i rivoluzionari a una parte della "
-            "popolazione francese — in particolare contadini e fedeli alla monarchia "
-            "e alla Chiesa — nella regione della Vandea."
+            "The War of the Vendée was one of the internal difficulties of the "
+            "French Revolution: a civil conflict that pitted the revolutionaries "
+            "against part of the French population — particularly peasants and "
+            "those loyal to the monarchy and the Church — in the Vendée region."
         ),
     ),
     (
         "What were Napoleon's main military campaigns and how did his empire end?",
-        "quali furono le principali campagne di Napoleone e come finì il suo impero?",
+        "Quali furono le principali campagne militari di Napoleone e come finì il suo impero?",
         ["campagna d'italia", "mosca", "sant'elena", "consolato", "impero", "sconfitta"],
         (
-            "Napoleone condusse la campagna d'Italia con la nascita delle Repubbliche, "
-            "la campagna d'Egitto che ne accelerò l'ascesa politica, poi instaurò il "
-            "Consolato e l'Impero estendendo l'egemonia sull'Europa. La conquista di "
-            "Mosca segnò l'inizio del declino; l'impero si concluse con la sconfitta "
-            "definitiva e l'esilio sull'isola di Sant'Elena."
+            "Napoleon led the Italian campaign, during which the Republics were "
+            "established, and the Egyptian campaign, which accelerated his "
+            "political rise; he then installed the Consulate and the Empire, "
+            "extending his hegemony over Europe. The conquest of Moscow marked "
+            "the beginning of his decline; the empire ended with his final "
+            "defeat and exile to the island of Saint Helena."
         ),
     ),
     (
         "What did the Congress of Vienna decide and who were its main actors?",
-        "cosa stabilì il Congresso di Vienna e chi ne furono i protagonisti?",
+        "Cosa stabilì il Congresso di Vienna e chi furono i suoi protagonisti?",
         ["congresso di vienna", "restaurazione", "santa alleanza", "europa", "equilibrio"],
         (
-            "Il Congresso di Vienna stabilì un nuovo assetto europeo volto a restaurare "
-            "l'ordine precedente alla Rivoluzione Francese e alle conquiste napoleoniche. "
-            "Portò alla creazione della Santa Alleanza tra le potenze conservatrici. "
-            "I protagonisti furono i rappresentanti delle grandi potenze europee "
-            "vincitrici su Napoleone."
+            "The Congress of Vienna established a new European order aimed at "
+            "restoring the situation prior to the French Revolution and "
+            "Napoleon's conquests. It led to the creation of the Holy Alliance "
+            "among the conservative powers. The main actors were representatives "
+            "of the great European powers that had defeated Napoleon."
         ),
     ),
     (
         "Who was Mazzini and what was the Giovine Italia?",
-        "chi era Mazzini e cos'era la Giovine Italia?",
+        "Chi era Mazzini e cos'era la Giovine Italia?",
         ["mazzini", "giovine italia", "dio e popolo", "repubblica", "indipendenza"],
         (
-            "Giuseppe Mazzini fu uno dei principali protagonisti del Risorgimento e "
-            "fondatore della Giovine Italia, un'associazione che propugnava "
-            "l'indipendenza e l'unificazione dell'Italia come nazione libera e "
-            "repubblicana, ispirata al motto 'Dio e Popolo'."
+            "Giuseppe Mazzini was one of the leading figures of the Risorgimento "
+            "and founder of Young Italy (Giovine Italia), an association that "
+            "advocated the independence and unification of Italy as a free "
+            "republican nation, inspired by the motto 'God and the People'."
         ),
     ),
     (
         "What was Cavour's role in the unification of Italy?",
-        "quale fu il ruolo di Cavour nell'unificazione d'Italia?",
+        "Qual fu il ruolo di Cavour nell'unificazione d'Italia?",
         ["cavour", "seconda guerra", "spedizione dei mille", "piemonte", "diplomatica"],
         (
-            "Camillo Benso conte di Cavour fu la figura politica centrale del processo "
-            "di unificazione. Attuò riforme nel Regno di Sardegna, condusse una "
-            "politica estera che portò all'alleanza con la Francia, guidò la Seconda "
-            "guerra d'Indipendenza e creò le condizioni diplomatiche per la Spedizione "
-            "dei Mille di Garibaldi."
-        ),
-    ),
-    (
-        "What was Taylorism and in what historical context did it emerge?",
-        "cos'era il Taylorismo e in quale contesto storico nacque?",
-        ["taylorismo", "organizzazione", "lavoro", "seconda rivoluzione", "fabbrica", "scientifica"],
-        (
-            "Il Taylorismo fu un sistema di organizzazione scientifica del lavoro "
-            "sviluppato durante la Seconda Rivoluzione Industriale. Rappresentò una "
-            "nuova forma di razionalizzazione della produzione in fabbrica, finalizzata "
-            "ad aumentare la produttività attraverso la standardizzazione dei compiti operai."
+            "Count Camillo Benso di Cavour was the central political figure in "
+            "the unification process. He introduced reforms in the Kingdom of "
+            "Sardinia, pursued a foreign policy that led to an alliance with "
+            "France, directed the Second War of Independence, and created the "
+            "diplomatic conditions for Garibaldi's Expedition of the Thousand."
         ),
     ),
     (
         "What was the Monroe Doctrine and in what context was it issued?",
-        "cos'era la dottrina Monroe e in quale contesto fu proclamata?",
+        "Che cos'era la dottrina Monroe e in quale contesto fu proclamata?",
         ["monroe", "america latina", "indipendenza", "colonizzazione", "europa", "intervento"],
         (
-            "La dottrina Monroe fu proclamata nell'ambito delle lotte per l'indipendenza "
-            "dell'America latina e dei moti liberali. Affermava il principio che "
-            "l'America non doveva essere considerata campo di ulteriore colonizzazione "
-            "europea, opponendosi all'interventismo delle potenze del Vecchio Continente "
-            "nelle Americhe."
+            "The Monroe Doctrine was proclaimed in the context of the Latin "
+            "American independence struggles and liberal uprisings. It asserted "
+            "the principle that America should not be considered a field for "
+            "further European colonisation, opposing the interventionism of Old "
+            "World powers in the Americas."
         ),
     ),
     (
         "How were the price revolution of the 16th century and the geographical discoveries connected?",
-        "come erano collegati la rivoluzione dei prezzi del Cinquecento e le scoperte geografiche?",
+        "Come erano collegate la rivoluzione dei prezzi del XVI secolo e le scoperte geografiche?",
         ["rivoluzione dei prezzi", "bodin", "oro", "argento", "americhe", "inflazione"],
         (
-            "Nel Cinquecento i prezzi subirono un incremento di circa il 400%. "
-            "Il pensatore Jean Bodin spiegò il fenomeno sostenendo che l'importazione "
-            "massiccia di oro e argento dalle Americhe da parte di Spagna e Portogallo "
-            "aveva causato la svalutazione della moneta. I salariati furono i più "
-            "penalizzati, poiché l'inflazione erose il loro già esiguo potere d'acquisto."
+            "In the sixteenth century, prices rose by approximately 400%. The "
+            "thinker Jean Bodin explained this phenomenon by arguing that the "
+            "massive importation of gold and silver from the Americas by Spain "
+            "and Portugal had caused the devaluation of money. Wage earners were "
+            "the most penalised, as inflation eroded their already meagre "
+            "purchasing power."
         ),
     ),
 ]
-
 # ── Helpers ────────────────────────────────────────────────────────────
 
 def tokenize(text: str):
@@ -519,14 +347,17 @@ def cosine_scores(q_emb, embeddings):
     return scores
 
 
-# ── RAG standard: cerca su TUTTI i chunk della collection ──────────────
+# ── RAG standard: cerca su TUTTI i chunk di TUTTE le collection ────────
 
-def retrieve_standard(query, q_emb, col, top_k=TOP_K):
+def retrieve_standard(query, q_emb, chroma_client, top_k=TOP_K):
     t0 = time.perf_counter()
 
-    data = col.get(include=["embeddings", "documents", "metadatas"])
-    embeddings = data["embeddings"]
-    documents  = data["documents"]
+    embeddings, documents = [], []
+    for col_info in chroma_client.list_collections():
+        col  = chroma_client.get_collection(col_info.name)
+        data = col.get(include=["embeddings", "documents"])
+        embeddings.extend(data["embeddings"])
+        documents.extend(data["documents"])
 
     dense_scores = cosine_scores(q_emb, embeddings)
     dense_rank   = sorted(range(len(embeddings)), key=lambda i: dense_scores[i], reverse=True)
@@ -624,11 +455,11 @@ def main():
     chroma_client = chromadb.PersistentClient(path="./chroma_db")
     registry     = load_registry()
 
-    col_name = COLLECTION or chroma_client.list_collections()[0].name
-    col      = chroma_client.get_collection(col_name)
-    total_chunks = col.count()
+    all_cols     = chroma_client.list_collections()
+    total_chunks = sum(chroma_client.get_collection(c.name).count() for c in all_cols)
+    col_names    = [c.name for c in all_cols]
 
-    print(f"Collection: {col_name}  |  chunk totali: {total_chunks}  |  SLM: {len(registry)}")
+    print(f"Collections: {col_names}  |  chunk totali: {total_chunks}  |  SLM: {len(registry)}")
     print(f"Query: {len(QUERIES)}  |  top-k={TOP_K}  |  top-N SLM={TOP_N_SLMS}  |  model={GENERATION_MODEL}\n")
 
     def hit_rate(docs, keywords):
@@ -645,13 +476,15 @@ def main():
     for idx, (query_en, query_it, expected_kws, ground_truth) in enumerate(QUERIES, 1):
         print(f"\n[{idx}/{len(QUERIES)}] {query_en}")
 
-        # BGE-M3 è multilingue: si usa la query italiana per embedding e BM25
-        # così dense retrieval e lexical retrieval operano nella stessa lingua dei documenti
+        # Retrieval con la query IT: BM25 lavora nella stessa lingua dei documenti
+        # (confronto fair tra StdRAG e SLM-RAG sull'aspetto retrieval).
+        # La generazione riceve query_it ma il system prompt forza l'output in inglese,
+        # così evaluate_quality.py può usare query_en + mpnet senza language mismatch.
         q_emb = emb_model.encode(
             [query_it], normalize_embeddings=True, convert_to_numpy=True
         )[0].astype(np.float32)
 
-        docs_std, pool_std, t_std = retrieve_standard(query_it, q_emb, col)
+        docs_std, pool_std, t_std = retrieve_standard(query_it, q_emb, chroma_client)
         docs_slm, pool_slm, t_slm = retrieve_slm(query_it, q_emb, registry, chroma_client)
 
         overlap = len(set(docs_std[:TOP_K]) & set(docs_slm[:TOP_K])) / TOP_K * 100
@@ -668,12 +501,14 @@ def main():
         print(f"  Retrieval  —  StdRAG: {t_std:.1f}ms (pool={pool_std})  |  SLM-RAG: {t_slm:.1f}ms (pool={pool_slm})  speedup={speedup:.1f}x")
         print(f"  Generazione StdRAG...")
         t_gen0 = time.perf_counter()
-        ans_std = generate(query_it, docs_std, GENERATION_MODEL)
+        # Generazione: query EN per forzare risposte in inglese (Qwen 4B segue la lingua
+        # della domanda; il system prompt da solo non basta su modelli piccoli).
+        ans_std = generate(query_en, docs_std, GENERATION_MODEL)
         t_gen_std = (time.perf_counter() - t_gen0) * 1000
 
         print(f"  Generazione SLM-RAG...")
         t_gen0 = time.perf_counter()
-        ans_slm = generate(query_it, docs_slm, GENERATION_MODEL)
+        ans_slm = generate(query_en, docs_slm, GENERATION_MODEL)
         t_gen_slm = (time.perf_counter() - t_gen0) * 1000
 
         print(f"  Gen times  —  StdRAG: {t_gen_std:.0f}ms  |  SLM-RAG: {t_gen_slm:.0f}ms")
@@ -705,7 +540,7 @@ def main():
     pool_reduction = (1 - np.mean(slm_pools) / np.mean(std_pools)) * 100
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(f"# Benchmark RAG — {col_name}\n\n")
+        f.write(f"# Benchmark RAG — {', '.join(col_names)}\n\n")
         f.write(f"**Modello:** {GENERATION_MODEL}  |  **top-k:** {TOP_K}  |  **top-N SLM:** {TOP_N_SLMS}\n\n")
         f.write(f"| Metrica | StdRAG | SLM-RAG |\n|---|---|---|\n")
         f.write(f"| Speedup retrieval | — | **{avg_speedup:.1f}x** |\n")
@@ -731,10 +566,10 @@ def main():
     print(f"\nFile salvato: {OUTPUT_FILE}")
 
     # ── Salva JSON per evaluate_quality.py ────────────────────────────
-    json_path = OUTPUT_FILE.replace(".md", "_keybert_results.json")
+    json_path = OUTPUT_FILE.replace(".md", f"_results.json")
     json_data = {
         "metadata": {
-            "collection": col_name,
+            "collections": col_names,
             "model":      GENERATION_MODEL,
             "top_k":      TOP_K,
             "top_n_slm":  TOP_N_SLMS,

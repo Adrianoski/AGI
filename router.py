@@ -28,8 +28,8 @@ MAX_EXCERPT_CHARS: int = 4000
 
 
 # Hardcoded summary LLM — always used, never configurable by the user
+#SUMMARY_MODEL: str = "Qwen/Qwen2.5-3B-Instruct"
 SUMMARY_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
-#SUMMARY_MODEL: str = "Qwen/Qwen3.5-9B"
 # Model-agnostic summary function type.
 # Input:  list of chunk texts (representative subset)
 # Output: (topic_summary: str, keywords: List[str])
@@ -41,18 +41,16 @@ _summary_mdl = None
 _kw_llm      = None   # KeyLLM TextGeneration instance, built from _summary_mdl
 
 _KW_PROMPT = (
-    "You are a knowledge indexing assistant.\n"
-    "I have the following document:\n[DOCUMENT]\n\n"
-    "Extract 10-15 specific keywords from the document above.\n"
-    "Use the same language as the document.\n"
-    "Include: named entities (people, places, battles, events), dates or historical periods, "
-    "factions, ideologies, movements, trade routes, concepts, technical terms.\n"
-    "Exclude: generic words like 'chapter', 'text', 'section', 'page', 'document', "
-    "'summary', 'list', 'approfondimenti', 'sintesi', 'mappe'.\n"
-    "Exclude: page numbers, formatting labels, index entries.\n"
-    "Return ONLY a comma-separated list of keywords:\n"
+    "Extract 10-15 index tags from the text below.\n"
+    "Return ONLY a comma-separated list. No explanations. No labels. No rules.\n\n"
+    "Good example output:\n"
+    "James Watt, macchina a vapore, 1769, carbone, Rivoluzione Industriale, "
+    "George Stephenson, locomotiva, siderurgia, proletariato, enclosures\n\n"
+    "If the text contains only page numbers, URLs, image captions, index entries, "
+    "or formatting symbols with no real content, return exactly: SKIP\n\n"
+    "Text:\n[DOCUMENT]\n\n"
+    "Tags:\n"
 )
-
 
 # ── I/O helpers ────────────────────────────────────────────────────────
 
@@ -139,7 +137,6 @@ def unload_summary_model() -> None:
     _kw_llm = None
 
     if _summary_mdl is not None:
-        _summary_mdl.cpu()
         del _summary_mdl
         _summary_mdl = None
 
@@ -221,11 +218,14 @@ def _is_meaningful_kw(kw: str) -> bool:
     kw = kw.strip()
     if len(kw) < 4:
         return False
-    # Starts with a digit (e.g. "18 organizzazione", "2media storia", "113 prussia")
+    # Starts with a digit: allow 4-digit years (1000-2100), reject page refs (1-3 digits)
     if kw[0].isdigit():
-        return False
-    # Ends with a 2+ digit number after space (page refs: "restaurazione 153", "napoleon 146")
-    if re.search(r'\s\d{2,}$', kw):
+        first_token = kw.split()[0]
+        if not (len(first_token) == 4 and first_token.isdigit()):
+            return False
+    # Ends with a 2-3 digit number (page refs: "restaurazione 153", "napoleon 146")
+    # Allow 4-digit years: "luglio 1789", "pace Augusta 1555"
+    if re.search(r'\s\d{2,3}$', kw):
         return False
     # PDF artifact prefixes
     if any(kw.lower().startswith(p) for p in _KW_ARTIFACT_PREFIXES):
@@ -241,7 +241,12 @@ def _is_meaningful_kw(kw: str) -> bool:
 
 
 def _parse_raw_keywords(raw: str) -> List[str]:
-    """Parse a comma-separated keyword string, filtering out noise tokens."""
+    raw = raw.strip()
+    
+    # Modello ha riconosciuto chunk junk
+    if raw.upper().startswith("SKIP"):
+        return []
+    
     result: List[str] = []
     for kw in raw.replace("\n", ",").split(","):
         kw = kw.strip()
@@ -383,13 +388,14 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
     global _summary_tok, _summary_mdl
 
     if _summary_tok is None or _summary_mdl is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16 if device == "cuda" else torch.float32
-        print(f"[router] Carico {SUMMARY_MODEL} su {device}...")
+        print(f"[router] Carico {SUMMARY_MODEL} in float16...")
         _summary_tok = AutoTokenizer.from_pretrained(SUMMARY_MODEL, trust_remote_code=True)
         _summary_mdl = AutoModelForCausalLM.from_pretrained(
-            SUMMARY_MODEL, torch_dtype=dtype, trust_remote_code=True
-        ).to(device).eval()
+            SUMMARY_MODEL,
+            torch_dtype=torch.float16,
+            device_map="cuda",
+            trust_remote_code=True,
+        ).eval()
 
     # ── SUMMARY (disabilitata) ─────────────────────────────────────────
     # SUMMARY_SAMPLE = 20
@@ -460,7 +466,7 @@ def update_slm_summary(
     the full semantic content of the cluster, not just a representative subset.
     """
     if summary_fn is None:
-        summary_fn = make_keybert_summary_fn()
+        summary_fn = _qwen_summary_fn
     entry = registry[slm_name]
     chunks_path = Path(entry["chunks_json"])
     if not chunks_path.exists():
@@ -480,16 +486,15 @@ def update_slm_summary(
     if not topic_summary and not keywords:
         return
 
-    # Encode keywords as the routing vector — denser semantic signal than full sentences.
-    # Fall back to topic_summary if no keywords were extracted.
-    routing_text = ", ".join(keywords) if keywords else topic_summary
-    summary_emb = embedding_model.encode(
-        [routing_text], normalize_embeddings=True, convert_to_numpy=True
-    )[0].tolist()
-
     entry["topic_summary"] = topic_summary
     entry["keywords"] = keywords
-    entry["summary_embedding"] = summary_emb
+
+    if embedding_model is not None:
+        routing_text = ", ".join(keywords) if keywords else topic_summary
+        summary_emb = embedding_model.encode(
+            [routing_text], normalize_embeddings=True, convert_to_numpy=True
+        )[0].tolist()
+        entry["summary_embedding"] = summary_emb
 
 
 # ── NEW: Batch summary refresh (call after full ingestion) ─────────────
@@ -499,20 +504,20 @@ def refresh_all_summaries(
     chroma_client,
     summary_fn: Optional[SummaryFn] = None,
 ) -> int:
-    """
-    Regenerate topic_summary and summary_embedding for every SLM in the registry.
-    Called automatically after every ingestion run.
-    Always uses Qwen2.5-7B-Instruct (loaded once and cached).
+    import gc
+    import torch
 
-    Returns:
-        Number of SLMs updated.
-    """
     registry = load_registry()
     count = 0
     for slm_name in list(registry.keys()):
         update_slm_summary(registry, slm_name, embedding_model, chroma_client, summary_fn)
         count += 1
     save_registry(registry)
+
+    unload_summary_model()
+    gc.collect()
+    torch.cuda.empty_cache()
+
     return count
 
 
@@ -1139,3 +1144,62 @@ def migrate_centroids_to_summaries(
     save_registry(registry)
 
     return len(migrated)
+
+def make_spacy_summary_fn(
+    model_name: str = "it_core_news_lg",
+    use_ner: bool = True,
+    use_pos_nouns: bool = True,
+) -> "SummaryFn":
+    """
+    Return a SummaryFn che estrae keyword con spaCy (NER + POS filter).
+    Drop-in replacement di make_keybert_summary_fn — stessa firma.
+
+    Strategia:
+      1. NER → entità coerenti (PER, ORG, GPE, LOC, MISC, PRODUCT, EVENT)
+      2. POS filter → NOUN + PROPN non già catturati come entità
+      3. _merge_keywords → dedup + substring absorption già presenti nel router
+    """
+    import spacy
+
+    try:
+        nlp = spacy.load(model_name)
+    except OSError:
+        raise OSError(
+            f"Modello spaCy '{model_name}' non trovato.\n"
+            f"Installa con: python -m spacy download {model_name}"
+        )
+
+    print(f"[router] spaCy inizializzato con '{model_name}'.")
+
+    # Label NER da tenere — esclude DATE, CARDINAL, ORDINAL, PERCENT (rumorose)
+    _KEEP_LABELS = {"PER", "ORG", "GPE", "LOC", "MISC", "PRODUCT", "EVENT", "WORK_OF_ART"}
+
+    def _fn(texts: List[str]) -> Tuple[str, List[str]]:
+        all_raw: List[str] = []
+
+        # Processa tutti i chunk in batch (molto più veloce di uno alla volta)
+        for doc in nlp.pipe(texts, batch_size=32, disable=["parser", "senter"]):
+
+            if use_ner:
+                for ent in doc.ents:
+                    if ent.label_ in _KEEP_LABELS:
+                        kw = ent.text.strip()
+                        if _is_meaningful_kw(kw):
+                            all_raw.append(kw)
+
+            if use_pos_nouns:
+                # Entità già estratte → non duplicare
+                entity_spans = {ent.start for ent in doc.ents}
+                for token in doc:
+                    if token.i in entity_spans:
+                        continue
+                    if token.pos_ in {"NOUN", "PROPN"} and not token.is_stop:
+                        kw = token.lemma_.strip()
+                        if _is_meaningful_kw(kw):
+                            all_raw.append(kw)
+
+        # Riusa _merge_keywords già presente nel router (dedup + absorption + freq sort)
+        return "", _merge_keywords(all_raw)
+
+    return _fn
+

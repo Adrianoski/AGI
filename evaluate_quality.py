@@ -214,11 +214,11 @@ def main():
         description="Valutazione qualitativa RAG con RAGAS + Claude"
     )
     parser.add_argument(
-        "--input",  default="benchmark_answers_results.json",
+        "--input",  default="FINAL2PDF.json",
         help="JSON prodotto da benchmark.py"
     )
     parser.add_argument(
-        "--output", default="quality_report.md",
+        "--output", default="final2PDF.md",
         help="File markdown di output"
     )
     args = parser.parse_args()

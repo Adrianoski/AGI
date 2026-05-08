@@ -11,7 +11,7 @@ import torch
 from chunking import process_pdf
 from router import (
     assign_chunks_auto, load_registry, merge_close_slms, find_top_n_slms,
-    migrate_centroids_to_summaries, refresh_all_summaries, make_keybert_summary_fn,
+    migrate_centroids_to_summaries, refresh_all_summaries, make_keybert_summary_fn, make_spacy_summary_fn
 )
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -77,9 +77,11 @@ def upload_and_chunk(pdf_file, collection_name):
     assignments, _strategy = assign_chunks_auto(chunks, embedding_model, col_name, chroma_client, threshold=0.55)
     merges = merge_close_slms(threshold=0.88, embedding_model=embedding_model, chroma_client=chroma_client)
 
-    keybert_fn = make_keybert_summary_fn(embedding_model)
-    n_refreshed = refresh_all_summaries(embedding_model, chroma_client, summary_fn=keybert_fn)
-    summary_line = f"\n{n_refreshed} SLM keyword estratte con KeyBERT."
+    #keybert_fn = make_keybert_summary_fn(embedding_model)
+    spacy_fn = make_spacy_summary_fn("it_core_news_lg")
+    #n_refreshed = refresh_all_summaries(embedding_model, chroma_client)
+    n_refreshed = refresh_all_summaries(embedding_model, chroma_client, summary_fn=spacy_fn)
+    summary_line = f"\n{n_refreshed} SLM keyword estratte con SpaCy."
 
     merge_line = f"\n{len(merges)} SLM uniti per prossimità." if merges else ""
     summary = (

@@ -19,7 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--registry",    default="./registry.json")
 parser.add_argument("--sort",        default="chunks", choices=["chunks", "name"])
 parser.add_argument("--min-chunks",  type=int, default=0)
-parser.add_argument("--output",      default="slm_report.txt")
+parser.add_argument("--output",      default="slm_report_spacy.txt")
 args = parser.parse_args()
 
 registry = json.loads(Path(args.registry).read_text())

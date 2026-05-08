@@ -1,0 +1,132 @@
+SLM totali: 25  |  mostrati: 25
+
+======================================================================
+
+[01] slm_054861c8  (chunks=14)
+  SUMMARY : 
+  KEYWORDS: Chiesa di Santa Maria Maggiore http://it.wikipedia.org/wiki/File:Council_Trent.jpg L'emblema dell'ordine dei, Pietro I http://upload.wikimedia.org/wikipedia/commons/b/be/Petr_Drozhdin_009.jpg Spoletta volante - http://it.wikipedia.org/wiki/File:Textile Shuttle.jpg James Watt http://it.wikipedia.org/wiki/File:James_Watt_by_Henry_Howard.jpg Apertura, Joseph-Ignace Guillotin http://it.wikipedia.org/wiki/File:DrGuillotin.jpg Georges Jacques Danton http://upload.wikimedia.org/wikipedia/commons/c/c6/Danton_001.jpg Percorso dei vandeani, http://upload.wikimedia.org/wikipedia/commons/2/2e/Buonarroti_Philippe.jpg Bandiera della Giovine Italia, Congresso di Vienna, Emanuele Filiberto http://upload.wikimedia.org/wikipedia/commons/c/c5/Emanuelo_Filiberto_de_Savojo.jpg Rappresentazione, Massimo D’Azelio http://upload.wikimedia.org/wikipedia/commons/c/c0/Cesare_Balbo_1848.jpg, Isabella http://it.wikipedia.org/wiki/Cristoforo_Colombo Colombo, Puglia http://upload.wikimedia.org/wikipedia/commons/d/d0/Coat_of_Arms_of_Apulia.svg Sicilia, http://it.wikipedia.org/wiki/File:Equestrian_Portrait_of_Jerome_Bonaparte.jpg, Percorso del primo viaggio, http://upload.wikimedia.org/wikipedia/it/8/89/Pio_IX_3.jpg Simbolo massonico http://upload.wikimedia.org/wikipedia/commons/a/ac/Square_compasses.svg, Quarto http://upload.wikimedia.org/wikipedia/commons/c/c3/Partenza_da_Quarto.jpg Nino Bixio, Jacques-Louis David - http://it.wikipedia.org/wiki/File:Jacques, Cappella Sistina http://upload.wikimedia.org/wikipedia/commons/2/2e/Sistine_Chapel_ceiling_photo_2.jpg Ritratto, Una seduta del Consiglio degli Anziani http://it.wikipedia.org/wiki/File:Conseil_des_Anciens.jpg, http://upload.wikimedia.org/wikipedia/commons/5/55/Battaglia_di_custoza_monte_cricol.jpg, Enrico il Navigatore http://it.wikipedia.org/wiki/File:Henry_the_Navigator1.jpg Rotta, http://upload.wikimedia.org/wikipedia/commons/c/ca/Regione-Emilia-Romagna-Stemma.svg, Darlington http://it.wikipedia.org/wiki/File:StocktonDarlingtonOpening.jpg Ned Ludd, https://upload.wikimedia.org/wikipedia/it/0/05/Friuli-Venezia_Giulia-Stemma.png, http://it.wikipedia.org/wiki/File:Maschera_azteca,_roma,_museo_etnografico.jpg, http://it.wikipedia.org/wiki/File:Croix_huguenote.gif Papa Paolo III, http://it.wikipedia.org/wiki/File:Luther95theses.jpg Lutero, http://it.wikipedia.org/wiki/File:Impero_di_Carlo_V.png, Marcia delle Donne su Versailles, Palazzo delle Tuileries, Jean-Baptiste Colbert, Concilio di Trento, http://upload.wikimedia.org/wikipedia/commons/e/ee/Leopold_II_of_Tuscany.jpg Le Tredici Colonie http://it.wikipedia.org/wiki/File:Map_of_territorial_growth_1775.jpg Pellerossa
+----------------------------------------------------------------------
+
+[02] slm_97403479  (chunks=7)
+  SUMMARY : 
+  KEYWORDS: Germania-Austria-Italia, Politica estera:**, industrializzazione, La Sinistra, legge, nord, piemontesizzazione, Stato italiano, bilancio, base, Statuto Albertino, Antonio Di Rudinì, Giovanni Giolitti, Fasci Siciliani, Destra Storica, Banca Romana, problema, Crispi, lira, Trattato di Addis Abeba, acciaierie di Terni, Triplice Alleanza, disoccupazione, intentionally, garibaldino, territorio, contadino, esercito, pictura, omitted
+----------------------------------------------------------------------
+
+[03] slm_ed6992a3  (chunks=6)
+  SUMMARY : 
+  KEYWORDS: Società Nazionale Italiana, casa Savoia, Prima guerra d’Indipendenza, Francia, Cavour, Vittorio Emanuele II, Regno delle due Sicilie, Piemontese, Austria, Napoleone III, esercito, Regno di Sardegna, Massimo d’Azeglio, Garibaldi, riforma, Chiesa, Regno del Centro Italia, Politica interna*, modernizzazione, fallimento, imperatore, monarchia, attentato, capodanno, Generale, accordo, Mazzini, legge, Regno dell’Alta Italia, Girolamo Bonaparte
+----------------------------------------------------------------------
+
+[04] slm_9f8c955b  (chunks=5)
+  SUMMARY : 
+  KEYWORDS: politica, operaio, Manifesto del partito comunista”, Impero coloniale, Karl Marx, modello, paese, Canale di Panama, Terza Repubblica, intellettuale, territorio, termine, teoria, Comune, libro, America meridionale, Oceano Atlantico, regina Vittoria, Napoleone III, Gran Bretagna, imperialismo, colonialismo, Trade Unions, popolazione, Stati Uniti, Il Capitale, lavoratore, Ottocento, Hong Kong, commercio
+----------------------------------------------------------------------
+
+[05] slm_1fce037f  (chunks=5)
+  SUMMARY : 
+  KEYWORDS: territorio, |Proletariato|la classe sociale degli operai, ||l’esportazione, ruolo, paese, fede, organizzazioi di|
+||lavoratori, scoperta dell’America, N.|
+||Machiavelli, mar Mediterraneo, oceano Atlantico, “Il Principe”, |Luddismo|il, personaggio, convinzione, rivoluzione, Cabotaggio, remissione, Karl Marx, strategia, argomento, ||vincolo, dottrina, Fenomeno, riunione, sinistra, elemento, prodotto, diritto, opposto
+----------------------------------------------------------------------
+
+[06] slm_c516906c  (chunks=4)
+  SUMMARY : 
+  KEYWORDS: Chiesa della Riforma, dottrina, indulgenza, Martin Lutero, Inghilterra, diffusione, risposta, salvezza, fede, Caterina d’Aragona, Concilio di Nicea, Lettera ai Romani, interpretazione, Sacra Scrittura, intentionally, Paesi Bassi, Anna Bolena, imperatore, esperienza, concezione, eucarestia, messaggio, cristiano, contadino, principio, San Paolo, peccatore, contrario, vescovo, pictura
+----------------------------------------------------------------------
+
+[07] slm_7a1c2b02  (chunks=4)
+  SUMMARY : 
+  KEYWORDS: Convenzione dichiarò guerra, preludio alla grande Rivoluzione, Jacques Turgot, territorio, Francia, Stato, Comitato di Salute Pubblica, Stati Generali, Georges Danton, Gran Bretagna, impostazione, opposizione, montagnardo, situazione, manodopera, Luigi XVI, carestia, raccolto, opinione, aumento, riforma, prezzo, regime, ordine, Chiesa, Vandea, terra, corte, clero, prete
+----------------------------------------------------------------------
+
+[08] slm_b8501181  (chunks=4)
+  SUMMARY : 
+  KEYWORDS: Congresso di Vienna, Gran Bretagna, Prussia, Libertà e di Nazione, Santa Alleanza, Austriaca, periodo, lord Castlereagh, Stato Pontificio, Restaurazione, Francia, potere, Ancien Regime, Alessandro I, Rivoluzione, decisione, sovrano, Europa, Confederazione Germanica, Regno delle due Sicilie, Jean-Baptiste Isabey, Stato Ottomano, insurrezione, Romanticismo, Metternich, Talleyrand, intervento, Adam Smith, Napoleone, interesse
+----------------------------------------------------------------------
+
+[09] slm_e2dbb8c2  (chunks=3)
+  SUMMARY : 
+  KEYWORDS: Galileo Galilei, Stati italiani, granducato di Toscana, Sacco di Roma, dominio, pictura, ducato di Milano, baricentro, conflitto, pace di Cateau-Cambrésis, Università di Padova, papa Clemente VII, ducato di Savoia, Stato Pontificio, Regno di Napoli, Sacre Scritture, pace di Madrid, intentionally, lanzichenecco, territorio, br>**-----, linguaggio, Scrittura, alleanza, politica, prodotto, Universo, Francia, Carlo V, omitted
+----------------------------------------------------------------------
+
+[10] slm_4e858e2c  (chunks=3)
+  SUMMARY : 
+  KEYWORDS: Rivoluzione Industriale, macchinario, fabbrica, operaio, industrializzazione, sfruttamento, quartiere, bambino, ruolo, coltivazione, imprenditore, proletariato, tecnologia, borghesia, ricchezza, crescita, fenomeno, economia, aumento, nascita, società, secolo, vapore, numero, classe, figlio, parte, donna, banca, caratteristiche
+----------------------------------------------------------------------
+
+[11] slm_3c3fea39  (chunks=3)
+  SUMMARY : 
+  KEYWORDS: Stati Uniti, Carlo Alberto, Carlo Felice, Santorre di Santarosa, insurrezione, atto, Giovanni VI di Portogallo, Federico Confalonieri, Confederazione degli, Vittorio Emanuele I, Piero Maroncelli, Pedro I. 
+
+## _, Stato del Nord, Silvio Pellico, Cesare Balbo, Costituzione, indipendenza, Inghilterra, resistenza, progetto, Grecia, popolo, potere, creolo, luglio, Le mie prigioni_ ”, frammentazione, intraprendenza, individualismo, colpo di Stato
+----------------------------------------------------------------------
+
+[12] slm_29d156bc  (chunks=3)
+  SUMMARY : 
+  KEYWORDS: la Giovine Italia, unificazione, Stati Uniti d’Europa, Regno di Sardegna, Vincenzo Gioberti, Regno dei Savoia, papato, confederazione, Carlo Cattaneo, Dio e Popolo”, schieramento, dibattito, italiano, progetto, riforma, Il Politecnico, miglioramento, comunicazione, indipendenza, Neoguelfismo, costituzione, federalismo, condizione, Repubblica, istruzione, posizione, liberismo, sacerdote, concetto, moderato
+----------------------------------------------------------------------
+
+[13] slm_f4102320  (chunks=3)
+  SUMMARY : 
+  KEYWORDS: Crescita degli Stati Uniti, regno il Cancelliere, Stati dell’Unione, intentionally, Guglielmo IV, pictura, omitted, diritto, Prussia, secolo, Dichiarazione dell’emancipazione degli schiavi, Otto Von Bismarck, Otto Von Bismark, monti Allegani, colonizzazione, Stati del Nord, popolazione, Pellerossa, territorio, conquista, La guerra, attività, sovrano, numero, Camere, corona, terra, West, Confederazione Indipendente, industrializzazione
+----------------------------------------------------------------------
+
+[14] slm_5ce75d9b  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: Enrico il Navigatore, isola, Oceano Atlantico, Capo di Sagres, esplorazione, San Salvador, Età Moderna, Marco Polo, musulmano, ricchezza, fenomeno, marinaio, Oriente, ottobre, stormo, Indie, merce, terra, marea, uomo, repubblica veneziana, circumnavigazione, conservazione, ammutinamento, preparazione, informazione, risentimento, esploratore, Portogallo, territorio
+----------------------------------------------------------------------
+
+[15] slm_23d5942f  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: Incas – America del Sud - Ande, Gengis Khan, tempio del Sole, figlio, Cina, Grande Muraglia, Impero Inca, Marco Polo, espansione, sacrificio, cavaliero, La guerra, esercito, dinastia, capitale, regione, nobiltà, morte, Cuzco, circoscrizione, combattimento, popolazione, prigioniero, costruzione, governatore, Samarcanda, successore, cavalleria, imperatore, cordicella
+----------------------------------------------------------------------
+
+[16] slm_ce88f30f  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: popolazione, Mediterraneo, aumento, secolo, rotta, Consiglio delle Indie, Nascita degli imperi, condizione, territorio, commercio, prodotto, Venezia, colono, Bartolomeo de Las Casa, ridistribuzione, atlantizzazione, disponibilità, miglioramento, disposizione, avventuriere, sfruttamento, possedimento, Cinquecento, diminuzione, cambiamento, spostamento, superficie, situazione, incremento, portoghese
+----------------------------------------------------------------------
+
+[17] slm_3f8c1f1b  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: re di Francia, Guerra dei Trent’anni, monarchia, Europa, Russia, Principato di Moscovia, Filippo di Borbone, Parlamento inglese, Guglielmo d’Orange, Pietro il Grande, Pietro I Romanov, Lord Protettore, Gran Bretagna, predominio, La Spagna, conflitto, Carlo II, colonia, Re Sole, corona, Olanda, trono, dichiarazione, intentionally, Inghilterra, protestanto, possibilità, rivoluzione, cambiamento, condizione
+----------------------------------------------------------------------
+
+[18] slm_99431349  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: Il“lume naturale” della ragione, Giuseppe II, movimento, E.  Kant, opera, Editto di Tolleranza, Illuminismo?, Maria Teresa, filosofo, periodo, riforma, ordine, legge, atto, bene, Dizionario ragionato delle arti, giurisdizionalismo, Impero asburgico, centralizzazione, rappresentante, trasformazione, philosophe es, intellettuale, pubblicazione, Codice Penale, intentionally, giuseppinismo, Enciclopedia, intelligenza, propugnatore
+----------------------------------------------------------------------
+
+[19] slm_dc3497b4  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: Napoleone, campagna di Russia, Maria Luisa d’Austria, Primo Console, territorio, esercito, Francia, blocco, Gran Bretagna, Direttorio, Sant’Elena, studioso, scoperta, economia, potenza, Europa, carica, Mosca, intentionally, ripercussione, convocazione, importazione, Champollion, geroglifico, Inghilterra, Francesco I, fallimento, spedizione, attenzione, situazione
+----------------------------------------------------------------------
+
+[20] slm_58e20f2f  (chunks=2)
+  SUMMARY : 
+  KEYWORDS: Costituzione del 1812, indipendenza, movimento, Moti, principio di nonintervento, Presidente Monroe, La Restaurazione, Le mie Prigioni, La S. Alleanza, C. Alberto, L. Filippo, C. Felice, americano, Germania, Francia, G. Pepe, Carlo X, fattore, Spagna, Russia, popolo, Europa, autodeterminazione, Confalonieri, partecipante, insurrezione, unificazione, iniziazione, precauzione, incarcerato
+----------------------------------------------------------------------
+
+[21] slm_9b2aeeb6  (chunks=1)
+  SUMMARY : 
+  KEYWORDS: peste, popolazione, cittadino, epidemia, crisi, morbo, Inghilterra, produzione, assedianto, intervallo, necessità, catapulta, Trecento, Germania, Seicento, abitante, carestia, migliaio, cadavere, genovese, contagio, flagello, Tartari, Venezia, Sicilia, Toscana, Francia, terreno, vittima, fattore
+----------------------------------------------------------------------
+
+[22] slm_f489e881  (chunks=1)
+  SUMMARY : 
+  KEYWORDS: sovrano, pulzella d’Orleans, Francia, figura, secolo, potere, feudo, territorialità, collaboratore, costituzione, Edoardo III, investitura, Filippo VI, patrimonio, burocrazia, situazione, formazione, esercizio, sovranità, personale, elemento, funzione, esercito, presenza, reazione, vescovo, confine, periodo, soldato, fiducia
+----------------------------------------------------------------------
+
+[23] slm_dbccd24c  (chunks=1)
+  SUMMARY : 
+  KEYWORDS: Ducato di Savoia, territorio, Signoria di Firenze, Ducato di Milano, area, Repubblica di Venezia, Stato della Chiesa, regno di Napoli, Valle d’Aosta, Amedeo VIII, civiltà, dominio, centro, Stati regionali, accentramento, estensione, differenza, debolezza, confronto, Chambery, esercito, penisola, fenomeno, egemonia, capitale, potenza, Italia, realtà, secolo, sbocco
+----------------------------------------------------------------------
+
+[24] slm_b962cb9a  (chunks=1)
+  SUMMARY : 
+  KEYWORDS: Parlamento inglese, Guerra dei Sette Anni, tassa, Dichiarazione d’Indipendenza, Gran Bretagna, Stamp Act, America, colonia, diritto, esportazione, Giorgio III, Inghilterra, Declaration, Settecento, produzione, iniziativa, Sugar Act, autonomia, strascico, documento, assemblea, funzione, francese, esercito, zucchero, Prussia, materia, mercato, alleato, Europa
+----------------------------------------------------------------------
+
+[25] slm_be8df80b  (chunks=1)
+  SUMMARY : 
+  KEYWORDS: Louis Pasteur, Edward Jenner, Robert Kock, importanza, vaccino, campo, sterilizzazione, realizzazione, correlazione, batteriologo, prevenzione, tubercolosi, insetticida, condizione, intervento, differenza, operazione, anestetico, confronto, industria, biologia, sviluppo, epidemia, adozione, sostanza, calmante, paziente, manicomo, aspirina, bacillo
+----------------------------------------------------------------------

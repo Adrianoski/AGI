@@ -6,6 +6,7 @@ Each type uses tuned chunk_size and overlap parameters.
 Chapter structure is preserved from the PDF as metadata.
 """
 
+from time import time
 import uuid
 import re
 from typing import List, Dict, Tuple
@@ -124,17 +125,24 @@ def extract_chapters(pdf_path: str) -> Tuple[List[Dict[str, str]], str]:
     full_text = pymupdf4llm.to_markdown(pdf_path)
     full_text = _MD_IMAGE.sub("", full_text)  # remove image references
 
+    # chapter_pattern = re.compile(
+    #     r'(?m)^('
+    #     r'#{1,3}\s+[^\n]+'                       # markdown headers: # / ## / ###
+    #     r'|Chapter\s+\d+[^\n]*'                  # "Chapter N ..."
+    #     r'|CHAPTER\s+\d+[^\n]*'
+    #     r'|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}'       # "1.1 Title"
+    #     r'|\d{1,2}\.\s+[A-Z][^\n]{3,}'          # "1. Title"
+    #     r')',
+    # )
     chapter_pattern = re.compile(
-        r'(?m)^('
-        r'#{1,3}\s+[^\n]+'                       # markdown headers: # / ## / ###
-        r'|Chapter\s+\d+[^\n]*'                  # "Chapter N ..."
-        r'|CHAPTER\s+\d+[^\n]*'
-        r'|\d{1,2}\.\d+\s+[A-Z][^\n]{3,}'       # "1.1 Title"
-        r'|\d{1,2}\.\s+[A-Z][^\n]{3,}'          # "1. Title"
+        r'(?m)^#{1,3}\s+\*{0,2}'           # ## o ## ** (con bold opzionale)
+        r'('
+        r'\d{1,2}\.\s+[A-ZÀÈÌÒÙ][^\n]{3,}' # "1. IL 1300" — solo primo livello
+        r'|[A-ZÀÈÌÒÙ]{3,}[^\n]+'           # "L'ETÀ DELLA RINASCITA" — tutto maiuscolo
         r')',
     )
-
     matches = list(chapter_pattern.finditer(full_text))
+
     if not matches:
         return [{"chapter": "Document", "text": full_text.strip()}], full_text
 
@@ -211,7 +219,8 @@ def process_pdf(
             text = text.strip()
             if text and not _index_noise.search(text):
                 raw_chunks.append({"chapter": chapter["chapter"], "text": text})
-
+    print(f"[chunking] {len(raw_chunks)} chunk validi,")
+   
     if not raw_chunks:
         return [], doc_type, profile_summary
 

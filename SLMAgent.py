@@ -86,7 +86,9 @@ _SYSTEM_PROMPT = (
     "You are a precise assistant. Answer the question using ONLY the information "
     "provided in the context below. Do not use any external knowledge or information "
     "from your training. If the answer is not present in the context, respond with "
-    "'The answer is not available in the provided context.'"
+    "'The answer is not available in the provided context.' "
+    "CRITICAL: You MUST write your answer in English only. The context may be in "
+    "Italian, but your final answer must always be written in English."
 )
 
 
@@ -97,7 +99,7 @@ def build_messages(query: str, context_chunks: List[str]) -> List[Dict]:
     )
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER:"},
+        {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {query}\n\nANSWER (in English):"},
     ]
 
 
