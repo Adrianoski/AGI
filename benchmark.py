@@ -28,7 +28,7 @@ COLLECTION        = None                  # non usato — il benchmark cerca su 
 GENERATION_MODEL  = "Qwen/Qwen3.5-4B"    # modello HuggingFace per la generazione
 MAX_NEW_TOKENS    = 256
 MAX_INPUT_TOKENS  = 131072                # 128K — Qwen3.5-4B nativo è 256K, niente rope scaling necessario
-OUTPUT_FILE       = f"benchmark_answers_spacy_4B_3_WAYS_2PDF_25chapters_{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md"
+OUTPUT_FILE       = f"benchmark_answers_spacy_4B_3_WAYS_5PDF_{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md"
 
 QUERIES = [
     # ── ORIGINAL 10 ──────────────────────────────────────────────────────────

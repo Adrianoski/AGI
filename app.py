@@ -79,6 +79,7 @@ def upload_and_chunk(pdf_file, collection_name):
 
     #keybert_fn = make_keybert_summary_fn(embedding_model)
     spacy_fn = make_spacy_summary_fn("it_core_news_lg")
+    #spacy_fn = make_spacy_summary_fn("en_core_web_lg")
     #n_refreshed = refresh_all_summaries(embedding_model, chroma_client)
     n_refreshed = refresh_all_summaries(embedding_model, chroma_client, summary_fn=spacy_fn)
     summary_line = f"\n{n_refreshed} SLM keyword estratte con SpaCy."
