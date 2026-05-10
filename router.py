@@ -21,14 +21,6 @@ SLM_DATA_DIR = Path("slm_data")
 # How often (in chunks added) the summary is refreshed during incremental ingestion.
 SLM_SUMMARY_EVERY_N: int = 20
 
-# Maximum total characters fed to the summary LLM across all chunk excerpts.
-# 4000 chars ≈ 1143 tokens; with ~200 token prompt + 80 token output = ~1423 tokens,
-# safely within the 2048-token limit used in _qwen_infer.
-MAX_EXCERPT_CHARS: int = 4000
-
-
-# Hardcoded summary LLM — always used, never configurable by the user
-#SUMMARY_MODEL: str = "Qwen/Qwen2.5-3B-Instruct"
 SUMMARY_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
 # Model-agnostic summary function type.
 # Input:  list of chunk texts (representative subset)
@@ -153,52 +145,7 @@ def unload_summary_model() -> None:
 
 # ── Qwen summary function ──────────────────────────────────────────────
 
-def _qwen_infer(prompt: str, max_new_tokens: int) -> str:
-    """Single inference call to the cached Qwen model. Returns decoded output text."""
-    import torch
-
-    device = next(_summary_mdl.parameters()).device
-    inputs = _summary_tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
-    with torch.no_grad():
-        out = _summary_mdl.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=_summary_tok.eos_token_id,
-        )
-    return _summary_tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-
-
 _NOISE_PREFIXES = ("note:", "the summary", "the keyword", "a knowledge", "while the")
-
-# Italian + English stop words for KeyBERT and keyword filtering
-_COMBINED_STOPWORDS = [
-    # Italian articles, prepositions, conjunctions, pronouns
-    "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
-    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
-    "e", "ed", "o", "ma", "se", "che", "non", "si",
-    "ai", "al", "del", "della", "dei", "degli", "delle",
-    "nel", "nella", "nei", "negli", "nelle",
-    "dal", "dalla", "dai", "dagli", "dalle",
-    "sul", "sulla", "sui", "sugli", "sulle",
-    "col", "coi", "allo", "alla", "agli", "alle",
-    "questo", "questa", "questi", "queste",
-    "quello", "quella", "quelli", "quelle",
-    "cui", "loro", "anche", "come", "più", "poi", "però",
-    "quando", "dove", "chi", "suo", "sua", "suoi", "sue",
-    "era", "erano", "fu", "furono", "è", "sono",
-    "molto", "tanto", "tutto", "tutti", "tutte", "tutta",
-    "ogni", "altro", "altra", "altri", "altre",
-    "già", "ancora", "sempre", "mai", "solo",
-    "vi", "ci", "mi", "ti", "ne", "li",
-    "verso", "dopo", "prima", "durante", "mentre",
-    "tale", "tali", "quanto", "nostro", "nostra",
-    # English
-    "the", "of", "and", "in", "to", "a", "is", "it", "its",
-    "by", "for", "or", "at", "be", "as", "an", "was", "are",
-    "with", "this", "that", "from", "on", "were", "not", "but",
-    "have", "had", "has", "he", "she", "they", "we",
-]
 
 # Single-word noise terms from book structure/index
 _NOISE_SINGLE_WORDS = frozenset([
@@ -258,44 +205,6 @@ def _parse_raw_keywords(raw: str) -> List[str]:
             continue
         result.append(kw)
     return result
-
-
-def make_keybert_summary_fn(
-    embedding_model=None,
-) -> "SummaryFn":
-    """
-    Return a SummaryFn that extracts keywords using KeyBERT.
-
-    Pass the already-loaded SentenceTransformer embedding_model to reuse it
-    instead of loading a separate copy.  If None, KeyBERT loads its default.
-
-    Extraction per chunk (1- and 2-gram, MMR for diversity), then aggregated
-    via _merge_keywords.
-    """
-    from keybert import KeyBERT
-
-    kw_model = KeyBERT(model=embedding_model) if embedding_model is not None else KeyBERT()
-    print(f"[router] KeyBERT inizializzato.")
-
-    def _fn(texts: List[str]) -> Tuple[str, List[str]]:
-        all_raw: List[str] = []
-        for text in texts:
-            if not text or not text.strip():
-                continue
-            results = kw_model.extract_keywords(
-                text,
-                keyphrase_ngram_range=(1, 2),
-                stop_words=_COMBINED_STOPWORDS,
-                use_mmr=True,
-                diversity=0.6,
-                top_n=10,
-            )
-            for kw, _score in results:
-                if _is_meaningful_kw(kw):
-                    all_raw.append(kw)
-        return "", _merge_keywords(all_raw)
-
-    return _fn
 
 
 def _merge_keywords(keywords: List[str]) -> List[str]:
@@ -397,45 +306,8 @@ def _qwen_summary_fn(texts: List[str]) -> Tuple[str, List[str]]:
             trust_remote_code=True,
         ).eval()
 
-    # ── SUMMARY (disabilitata) ─────────────────────────────────────────
-    # SUMMARY_SAMPLE = 20
-    # SUMMARY_CHARS  = 200
-    # if len(texts) <= SUMMARY_SAMPLE:
-    #     sample = texts
-    # else:
-    #     idxs = [round(i * (len(texts) - 1) / (SUMMARY_SAMPLE - 1)) for i in range(SUMMARY_SAMPLE)]
-    #     sample = [texts[i] for i in idxs]
-    # excerpt = "\n\n".join(f"[Chunk {i+1}]: {t[:SUMMARY_CHARS]}" for i, t in enumerate(sample))
-    # summary_prompt = (
-    #     "You are a knowledge indexing assistant.\n"
-    #     "Given the following text chunks, write ONE sentence describing the main topic.\n"
-    #     "Reply with the sentence only, no labels, no extra text.\n\n"
-    #     f"CHUNKS:\n{excerpt}\n\n"
-    #     "SUMMARY:\n"
-    # )
-    # topic_summary = _qwen_infer(summary_prompt, max_new_tokens=80)
-    # topic_summary = topic_summary.split("\n")[0].strip()
     topic_summary = ""
 
-    # ── KEYWORDS via KeyLLM (sequential, un chunk per chiamata) ───────
-    # llm = _get_kw_llm()
-    # all_raw: List[str] = []
-    # BATCH = 8
-    # for batch_start in range(0, len(texts), BATCH):
-    #     batch = texts[batch_start: batch_start + BATCH]
-    #     batch_results = llm.extract_keywords(batch)
-    #     for chunk_kws in batch_results:
-    #         if not chunk_kws:
-    #             continue
-    #         for kw in chunk_kws:
-    #             kw_str = kw[0] if isinstance(kw, tuple) else kw
-    #             all_raw.extend(_parse_raw_keywords(kw_str))
-
-    # ── KEYWORDS via GPU batching diretto ─────────────────────────────
-    # Tutti i prompt vengono costruiti in anticipo sostituendo [DOCUMENT]
-    # col testo di ogni chunk. Il pipeline processa KEYWORD_BATCH_SIZE prompt
-    # per forward pass: più sequenze in parallelo sulla GPU invece di una
-    # alla volta come fa KeyLLM internamente.
     pipe = _get_kw_pipe()
     prompts = [_KW_PROMPT.replace("[DOCUMENT]", t) for t in texts]
     all_raw: List[str] = []
@@ -748,198 +620,6 @@ def assign_chunks_auto(
     return assign_chunks_by_chapter(chunks, collection_name), "chapter"
 
 
-# ── HDBSCAN batch clustering ───────────────────────────────────────────
-
-# Path where the fitted HDBSCAN model is persisted between runs.
-HDBSCAN_MODEL_PATH = Path("hdbscan_model.pkl")
-
-
-def cluster_chunks_hdbscan(
-    collection_name: str,
-    chroma_client,
-    min_cluster_size: int = 5,
-    min_samples: int = 3,
-    noise_threshold: float = 0.60,
-    force_refit: bool = False,
-) -> Dict[str, List[str]]:
-    """
-    Cluster ALL chunks in a ChromaDB collection using HDBSCAN.
-
-    Replaces assign_chunks() for batch ingestion.  For incremental ingestion
-    (new document added later), the saved model is reused via approximate_predict().
-    If the fraction of noise points exceeds noise_threshold, HDBSCAN is refitted
-    on all chunks automatically.
-
-    Args:
-        collection_name:  ChromaDB collection to cluster.
-        chroma_client:    persistent ChromaDB client.
-        min_cluster_size: minimum number of chunks to form a cluster (HDBSCAN param).
-        min_samples:      controls how conservative the clustering is (HDBSCAN param).
-        noise_threshold:  if fraction of noise points > this, refit from scratch.
-        force_refit:      always refit even if a saved model exists.
-
-    Returns:
-        assignments dict {slm_name: [chunk_id, ...]} — same shape as assign_chunks().
-
-    Notes:
-        - Chunks labelled as noise (label == -1) by HDBSCAN are assigned to the
-          nearest cluster centroid (fallback cosine assignment).
-        - Requires: pip install hdbscan
-    """
-    try:
-        import hdbscan as hdbscan_lib
-        import pickle
-    except ImportError:
-        raise ImportError("pip install hdbscan")
-
-    _ensure_dirs()
-
-    # ── Load all embeddings from ChromaDB ──────────────────────────────
-    col = chroma_client.get_collection(collection_name)
-    data = col.get(include=["embeddings", "documents", "metadatas"])
-    embeddings = data.get("embeddings")
-    ids        = data.get("ids") or []
-
-    if embeddings is None or len(embeddings) == 0:
-        print("[hdbscan] Nessun embedding trovato nella collection.")
-        return {}
-
-    X = np.array(embeddings, dtype=np.float32)
-    n_total = len(X)
-    print(f"[hdbscan] {n_total} chunk da clusterizzare...")
-
-    # ── PCA reduction before HDBSCAN ──────────────────────────────────
-    # In 768D cosine distances are compressed in a narrow range → HDBSCAN
-    # collapses everything into one cluster. PCA to 50D separates the
-    # principal directions and makes density differences visible.
-    from sklearn.decomposition import PCA
-    n_components = min(50, n_total - 1, X.shape[1])
-    print(f"[hdbscan] PCA {X.shape[1]}D → {n_components}D ...")
-    pca = PCA(n_components=n_components, random_state=42)
-    X_reduced = pca.fit_transform(X)
-    var_explained = pca.explained_variance_ratio_.sum() * 100
-    print(f"[hdbscan] Varianza spiegata: {var_explained:.1f}%")
-
-    # ── Fit or reuse model ─────────────────────────────────────────────
-    clusterer = None
-    labels = None
-
-    if not force_refit and HDBSCAN_MODEL_PATH.exists():
-        print("[hdbscan] Carico modello salvato, uso approximate_predict()...")
-        with open(HDBSCAN_MODEL_PATH, "rb") as f:
-            saved = pickle.load(f)
-        clusterer = saved["clusterer"]
-        saved_pca = saved["pca"]
-        X_pred = saved_pca.transform(X)
-        labels_new, _ = hdbscan_lib.approximate_predict(clusterer, X_pred)
-        noise_frac = float(np.sum(labels_new == -1)) / n_total
-        print(f"[hdbscan] Noise fraction con modello esistente: {noise_frac:.1%}")
-
-        if noise_frac > noise_threshold:
-            print(f"[hdbscan] Noise > {noise_threshold:.0%} — rifitto da zero.")
-            clusterer = None
-
-        if clusterer is not None:
-            labels = labels_new
-            X_reduced = X_pred
-
-    if clusterer is None:
-        print("[hdbscan] Fitto HDBSCAN su tutti i chunk...")
-        clusterer = hdbscan_lib.HDBSCAN(
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            metric="euclidean",     # euclidean is correct after PCA reduction
-            prediction_data=True,
-        )
-        labels = clusterer.fit_predict(X_reduced)
-        with open(HDBSCAN_MODEL_PATH, "wb") as f:
-            pickle.dump({"clusterer": clusterer, "pca": pca}, f)
-        print(f"[hdbscan] Modello salvato in {HDBSCAN_MODEL_PATH}")
-
-    unique_labels = set(labels)
-    n_clusters = len(unique_labels - {-1})
-    n_noise = int(np.sum(labels == -1))
-    print(f"[hdbscan] {n_clusters} cluster · {n_noise} noise ({n_noise/n_total:.1%})")
-
-    # ── Assign noise points to nearest cluster centroid ────────────────
-    # Build centroid per cluster label first
-    cluster_centroids: Dict[int, np.ndarray] = {}
-    for lbl in unique_labels:
-        if lbl == -1:
-            continue
-        mask = labels == lbl
-        c = X[mask].mean(axis=0)
-        norm = np.linalg.norm(c)
-        cluster_centroids[lbl] = c / norm if norm > 0 else c
-
-    if n_noise > 0 and cluster_centroids:
-        for i, lbl in enumerate(labels):
-            if lbl != -1:
-                continue
-            e = X[i]
-            e_norm = np.linalg.norm(e)
-            best_lbl, best_score = -1, -2.0
-            for cl, centroid in cluster_centroids.items():
-                score = float(np.dot(e / e_norm, centroid)) if e_norm > 0 else 0.0
-                if score > best_score:
-                    best_score = score
-                    best_lbl = cl
-            labels[i] = best_lbl
-        print(f"[hdbscan] {n_noise} noise riassegnati al cluster più vicino.")
-
-    # ── Build SLM registry from clusters ──────────────────────────────
-    registry = load_registry()
-
-    # Remove previous SLMs for this collection so we start fresh
-    to_remove = [k for k, v in registry.items() if v.get("collection") == collection_name]
-    for k in to_remove:
-        chunks_path = Path(registry[k]["chunks_json"])
-        if chunks_path.exists():
-            chunks_path.unlink()
-        del registry[k]
-    if to_remove:
-        print(f"[hdbscan] Rimossi {len(to_remove)} SLM precedenti per '{collection_name}'.")
-
-    # Create one SLM per cluster
-    label_to_slm: Dict[int, str] = {}
-    for lbl in sorted(set(labels)):
-        slm_name = f"slm_{uuid.uuid4().hex[:8]}"
-        mask = np.where(labels == lbl)[0]
-        chunk_ids_for_cluster = [ids[i] for i in mask]
-
-        # Compute centroid
-        vecs = X[mask]
-        centroid = vecs.mean(axis=0)
-        norm = np.linalg.norm(centroid)
-        centroid = (centroid / norm).tolist() if norm > 0 else centroid.tolist()
-
-        # Write chunk list to disk
-        _ensure_dirs()
-        chunks_path = SLM_DATA_DIR / f"{slm_name}_chunks.json"
-        with open(chunks_path, "w") as f:
-            json.dump([{"id": cid} for cid in chunk_ids_for_cluster], f, indent=2)
-
-        registry[slm_name] = {
-            "collection":         collection_name,
-            "chunks_json":        str(chunks_path),
-            "chunk_count":        len(chunk_ids_for_cluster),
-            "centroid_embedding": centroid,
-            "topic_summary":      "",
-            "keywords":           [],
-            "summary_embedding":  [],
-        }
-        label_to_slm[lbl] = slm_name
-
-    save_registry(registry)
-
-    assignments = {
-        label_to_slm[lbl]: [ids[i] for i in np.where(labels == lbl)[0]]
-        for lbl in sorted(set(labels))
-    }
-    print(f"[hdbscan] {len(assignments)} SLM creati e salvati nel registry.")
-    return assignments
-
-
 # ── UPDATED: Query-time routing ────────────────────────────────────────
 
 def find_top_n_slms(
@@ -1152,7 +832,6 @@ def make_spacy_summary_fn(
 ) -> "SummaryFn":
     """
     Return a SummaryFn che estrae keyword con spaCy (NER + POS filter).
-    Drop-in replacement di make_keybert_summary_fn — stessa firma.
 
     Strategia:
       1. NER → entità coerenti (PER, ORG, GPE, LOC, MISC, PRODUCT, EVENT)

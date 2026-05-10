@@ -24,7 +24,6 @@ from router import load_registry, find_top_n_slms
 TOP_N_SLMS        = 3
 TOP_K             = 5
 RRF_K             = 60
-COLLECTION        = None                  # non usato — il benchmark cerca su tutte le collection
 GENERATION_MODEL  = "Qwen/Qwen3.5-4B"    # modello HuggingFace per la generazione
 MAX_NEW_TOKENS    = 256
 MAX_INPUT_TOKENS  = 131072                # 128K — Qwen3.5-4B nativo è 256K, niente rope scaling necessario
@@ -413,7 +412,7 @@ def retrieve_slm(query, q_emb, registry, chroma_client, top_k=TOP_K):
 
 # ── SLM-Full: routing + tutti i chunk del cluster (no retrieval interno) ──
 
-def retrieve_slm_full(query, q_emb, registry, chroma_client):
+def retrieve_slm_full(q_emb, registry, chroma_client):
     """Solo routing semantico: passa al LLM TUTTI i chunk dei top-N SLM,
     senza ulteriore filtraggio dense/BM25 intra-cluster."""
     t0 = time.perf_counter()
@@ -500,7 +499,6 @@ def main():
     overlaps, std_hits, slm_hits, full_hits = [], [], [], []
     md_rows = []
 
-    SEP = "=" * 110
     for idx, (query_en, query_it, expected_kws, ground_truth) in enumerate(QUERIES, 1):
         print(f"\n[{idx}/{len(QUERIES)}] {query_en}")
 
@@ -514,7 +512,7 @@ def main():
 
         docs_std,  pool_std,  t_std  = retrieve_standard(query_it, q_emb, chroma_client)
         docs_slm,  pool_slm,  t_slm  = retrieve_slm(query_it, q_emb, registry, chroma_client)
-        docs_full, pool_full, t_full = retrieve_slm_full(query_it, q_emb, registry, chroma_client)
+        docs_full, pool_full, t_full = retrieve_slm_full(q_emb, registry, chroma_client)
 
         overlap = len(set(docs_std[:TOP_K]) & set(docs_slm[:TOP_K])) / TOP_K * 100
         hr_std  = hit_rate(docs_std,  expected_kws)
