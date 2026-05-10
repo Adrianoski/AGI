@@ -447,7 +447,7 @@ def _load_gen_model(model_name: str):
     global _gen_tok, _gen_mdl
     if _gen_tok is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype  = torch.float16 if device == "cuda" else torch.float32
+        dtype  = torch.int8 if device == "cuda" else torch.float32
         print(f"  Carico {model_name} su {device} (max_input_tokens={MAX_INPUT_TOKENS})...")
         _gen_tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         _gen_tok.model_max_length = MAX_INPUT_TOKENS
