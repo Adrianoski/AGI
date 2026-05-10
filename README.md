@@ -1,24 +1,41 @@
 # CLARA
 
-Sistema RAG (Retrieval-Augmented Generation) **a doppio livello di indicizzazione semantica** progettato per la lingua italiana. Il documento viene partizionato in **SLM** (*Semantic Language Maps*) — cluster semantici di chunk — su cui un router instrada le query, riducendo drasticamente lo spazio di ricerca senza degradare la qualità delle risposte.
+A Retrieval-Augmented Generation pipeline organised around a **two-level
+semantic index**. Documents are partitioned into **SLMs** (*Small Language
+Models*) — topic-specialised clusters of chunks — over which a router
+dispatches incoming queries, drastically reducing the search space without
+degrading answer quality.
+
+Each SLM is conceptually a small, topic-specialised model of a slice of the
+corpus, materialised as a cluster of related chunks plus a routing keyword
+summary.
 
 ---
 
-## Tesi sperimentale
+## Hypothesis
 
-Il RAG standard fa retrieval su **tutti** i chunk del corpus. Quando il corpus cresce, la latenza cresce linearmente e il segnale del top-k si "diluisce" nel rumore di chunk semanticamente lontani.
+A standard RAG pipeline scores every query against every chunk in the corpus.
+As the corpus grows, latency grows linearly and the signal of the top-k is
+diluted by chunks that are semantically far from the query.
 
-**Ipotesi**: se il corpus ha struttura semantica intrinseca (capitoli, argomenti, sotto-domini), un primo livello di **routing semantico** verso un sotto-insieme di chunk *omogenei* può:
+If a corpus has intrinsic semantic structure (chapters, topics, sub-domains),
+a first stage of **semantic routing** towards a homogeneous neighbourhood of
+chunks can:
 
-- ridurre il pool di ricerca di un ordine di grandezza
-- mantenere o aumentare la pertinenza dei chunk recuperati
-- portare a un **speedup misurabile** sul retrieval (4×–10× sui benchmark inclusi)
+- shrink the retrieval pool by an order of magnitude
+- preserve or improve the relevance of the retrieved evidence
+- yield a measurable speedup on retrieval
 
-L'unità di routing è l'**SLM**: un cluster di chunk con relativo *centroide* (media degli embedding) e *summary embedding* (embedding delle keyword estratte).
+Each SLM carries two distinct vector representations:
+
+- a *centroid embedding* — mean of the chunk embeddings, used for cluster
+  maintenance (assignment of new chunks, merge of close clusters);
+- a *summary embedding* — embedding of the keywords extracted from the
+  cluster, used exclusively for query routing.
 
 ---
 
-## Architettura
+## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -39,10 +56,10 @@ L'unità di routing è l'**SLM**: un cluster di chunk con relativo *centroide* (
               extract_chapters ─────────────┤
                                             ▼
                          RecursiveCharacterTextSplitter
-                            (chunks con metadato chapter)
+                            (chunks with chapter metadata)
                                             │
                                             ▼
-                            BAAI/bge-m3 (1024-D, normalizzato)
+                            BAAI/bge-m3 (1024-D, normalised)
                                             │
                           ┌─────────────────┴─────────────────┐
                           │                                   │
@@ -55,14 +72,14 @@ L'unità di routing è l'**SLM**: un cluster di chunk con relativo *centroide* (
                                               │                          │
                                               ▼                          ▼
                                    assign_chunks_by_chapter      assign_chunks (cosine,
-                                   (1 SLM per capitolo)          threshold=0.55, crea
-                                                                 nuovo SLM se nessuno
-                                                                 sopra soglia)
+                                   (one SLM per chapter)         threshold=0.55, opens
+                                                                 a new SLM if no match
+                                                                 above threshold)
                                               │                          │
                                               └──────────┬───────────────┘
                                                          ▼
                                                merge_close_slms (≥0.88)
-                                                  fonde SLM vicini
+                                                  fuses near SLMs
                                                          │
                                                          ▼
                                               refresh_all_summaries
@@ -80,15 +97,15 @@ L'unità di routing è l'**SLM**: un cluster di chunk con relativo *centroide* (
   Query (it/en)
        │
        ▼
-   bge-m3 ──► query_embedding (normalizzato)
+   bge-m3 ──► query_embedding (normalised)
        │
        ▼
    find_top_n_slms (cosine vs summary_embedding)
-       │              top-N SLM (default N=3)
+       │              top-N SLMs (default N=3)
        ▼
    ┌───────────────────────────────────────────────────┐
-   │  Pool = unione dei chunk dei top-N SLM            │
-   │  (≈ 6–15 chunk vs 219 nel corpus full)            │
+   │  Pool = union of the chunks of the top-N SLMs     │
+   │  (~ 6–15 chunks vs the full corpus)               │
    └───────────────────────────────────────────────────┘
        │
        ▼
@@ -104,63 +121,51 @@ L'unità di routing è l'**SLM**: un cluster di chunk con relativo *centroide* (
                           top-K chunks
                                │
                                ▼
-                  Qwen3.5-4B (system prompt EN-only)
-                  → risposta in streaming
+                  Qwen3.5-4B (system prompt forces EN output)
+                  → streaming answer
 ```
 
-### Tre modalità di retrieval (confrontate nel benchmark)
+### Three retrieval modes (compared in the benchmark)
 
-| Modalità    | Routing       | Filtraggio intra-pool | Pool tipico   | Casi d'uso                               |
-|-------------|---------------|-----------------------|---------------|------------------------------------------|
-| **StdRAG**  | nessuno       | dense + BM25 + RRF    | tutti i chunk | baseline                                 |
-| **SLM-RAG** | top-N SLM     | dense + BM25 + RRF    | ~6–15 chunk   | velocità + precisione (default)          |
-| **SLM-Full**| top-N SLM     | nessuno (passa tutto) | ~6–15 chunk   | massima ricontestualizzazione, no filtri |
-
----
-
-## Componenti
-
-### Stack tecnologico
-
-| Layer                | Componente                                       |
-|----------------------|--------------------------------------------------|
-| PDF parsing          | `pymupdf4llm` (Markdown output con header)       |
-| Chunking             | `langchain-text-splitters` (Recursive)           |
-| Embedding model      | `BAAI/bge-m3` (1024-D, multilingue, normalizzato)|
-| Vector store         | ChromaDB persistente (cosine)                    |
-| Keyword extraction   | spaCy `it_core_news_lg` (NER + POS)              |
-| Routing              | cosine similarity su `summary_embedding`         |
-| Lexical retrieval    | `rank_bm25`                                      |
-| Fusion               | Reciprocal Rank Fusion (k=60)                    |
-| LLM generazione      | Qwen3.5-4B (HuggingFace, configurabile)          |
-| LLM riassunto (opz.) | Qwen2.5-7B-Instruct (vedi `_qwen_summary_fn`)    |
-| UI                   | Gradio (tabs: Ingestion / Query)                 |
-| Eval qualità         | RAGAS + GPT-4o come giudice                      |
-| Visualizzazione      | Three.js + PCA/t-SNE/UMAP a 3D                   |
-
-### File di codice
-
-| File                       | Righe | Responsabilità                                                                                |
-|----------------------------|-------|-----------------------------------------------------------------------------------------------|
-| `app.py`                   | 715   | UI Gradio, ingestione, query con streaming, RRF fusion in-app                                 |
-| `router.py`                | 1205  | Registry SLM, assignment, merge, summary, routing, HDBSCAN, spaCy/KeyBERT/Qwen extractors     |
-| `chunking.py`              | 253   | PDF→Markdown, detect_doc_type, extract_chapters, profili adattivi                             |
-| `SLMAgent.py`              | 184   | Dataclass agent, prompt template, `generate_answer`, modalità RAG end-to-end                  |
-| `benchmark.py`             | 685   | 25 query con ground-truth, confronto Std/SLM/Full, output Markdown + JSON                     |
-| `evaluate_quality.py`      | 294   | RAGAS (Precision, Recall, AR, Faithfulness, Hallucination)                                    |
-| `show_slms.py`             | 63    | Report testuale: SLM, summary, keywords (ordinabile)                                          |
-| `diagnose_slms.py`         | 52    | Distribuzione cosine pairwise tra centroidi, stima merge per soglia                           |
-| `extract_vectors.py`       | 248   | Esporta chunk + centroidi in 3D (PCA/t-SNE/UMAP) con raggi d'azione                           |
-| `extract_raw_vectors.py`   | 163   | Variante: chunk colorati per capitolo, senza struttura SLM                                    |
-| `test_router.py`           | 262   | Test: assignment, merge, find_top_n, centroid update                                          |
-| `test_retrieval.py`        | 92    | CLI: query → top-k chunk con score                                                            |
-| `debug.py`                 | 18    | Snippet manuale Chroma (count, get by source)                                                 |
+| Mode        | Routing       | Intra-pool filter      | Typical pool  | Use case                                  |
+|-------------|---------------|------------------------|---------------|-------------------------------------------|
+| **StdRAG**  | none          | dense + BM25 + RRF     | full corpus   | baseline                                  |
+| **SLM-RAG** | top-N SLMs    | dense + BM25 + RRF     | ~6–15 chunks  | speed + precision (default UI mode)       |
+| **SLM-Full**| top-N SLMs    | none (forwards all)    | ~6–15 chunks  | maximum local recontextualisation         |
 
 ---
 
-## SLM — *Semantic Language Map*
+## Stack
 
-Un SLM è un cluster di chunk semanticamente affini, registrato in `registry.json`:
+| Layer              | Component                                          |
+|--------------------|----------------------------------------------------|
+| PDF parsing        | `pymupdf4llm` (Markdown output, headers preserved) |
+| Chunking           | `langchain-text-splitters` (Recursive)             |
+| Embedding model    | `BAAI/bge-m3` (1024-D, multilingual, normalised)   |
+| Vector store       | ChromaDB persistent client (cosine)                |
+| Keyword extraction | spaCy `it_core_news_lg` (NER + POS)                |
+| Routing            | cosine similarity over `summary_embedding`         |
+| Lexical retrieval  | `rank_bm25`                                        |
+| Fusion             | Reciprocal Rank Fusion (k=60)                      |
+| Generation LLM     | Qwen3.5-4B (HuggingFace, configurable)             |
+| Summary LLM (opt.) | Qwen2.5-7B-Instruct (see `_qwen_summary_fn`)       |
+| UI                 | Gradio (tabs: Ingestion / Query)                   |
+
+### Source files
+
+| File           | Responsibility                                                                  |
+|----------------|---------------------------------------------------------------------------------|
+| `app.py`       | Gradio UI, ingestion, streaming query with RRF fusion                           |
+| `router.py`    | SLM registry, assignment, merge, summary, query-time routing                    |
+| `chunking.py`  | PDF→Markdown, `detect_doc_type`, `extract_chapters`, adaptive profiles          |
+| `SLMAgent.py`  | Prompt construction (`build_messages`, chat-template helper)                    |
+| `benchmark.py` | 24 queries, three-way comparison Std/SLM/Full, Markdown + JSON output           |
+
+---
+
+## SLM — *Small Language Model*
+
+An SLM is a topic-specialised cluster of chunks recorded in `registry.json`:
 
 ```json
 {
@@ -169,365 +174,314 @@ Un SLM è un cluster di chunk semanticamente affini, registrato in `registry.jso
     "chunks_json":        "slm_data/slm_7d833ad1_chunks.json",
     "chunk_count":        2,
     "centroid_embedding": [0.0094, 0.0458, ...],
-    "topic_summary":      "## 2.1. La via verso Oriente ...",
-    "keywords":           ["Enrico il Navigatore", "Oriente", "Indie", ...],
+    "topic_summary":      "## 2.1. The route to the East ...",
+    "keywords":           ["Henry the Navigator", "East", "Indies", ...],
     "summary_embedding":  [...]
   }
 }
 ```
 
-**Due rappresentazioni vettoriali per due scopi distinti**:
+**Two vector representations for two distinct purposes**:
 
-- `centroid_embedding` (1024-D, L2-normalizzato) → **assignment** (a quale SLM appartiene un nuovo chunk?) e **merge** (quali SLM sono troppo vicini e vanno fusi?). È la media degli embedding dei chunk dell'SLM.
-- `summary_embedding` (1024-D) → **routing** (a quale SLM va instradata la query?). È l'embedding della stringa `", ".join(keywords)`. Le keyword sono semanticamente più significative degli embedding "medi" di chunk eterogenei.
+- `centroid_embedding` (1024-D, L2-normalised) → **assignment** (which SLM
+  does a new chunk belong to?) and **merge** (which SLMs are close enough to
+  be fused?). It is the mean of the cluster's chunk embeddings.
+- `summary_embedding` (1024-D) → **routing** (which SLM should the query be
+  routed to?). It is the embedding of the string `", ".join(keywords)`.
+  Keywords concentrate the discriminative lexical signal that a user query is
+  most likely to match, whereas mean embeddings tend to wash it out.
 
-### Strategie di assignment
+### Assignment strategies
 
-`assign_chunks_auto()` sceglie automaticamente:
+`assign_chunks_auto()` picks automatically:
 
-1. **`assign_chunks_by_chapter`** (preferita) — se i chunk hanno metadati `chapter` distinti (estratti da `chunking.extract_chapters`), crea **un SLM per capitolo**. Il centroide è la media degli embedding del capitolo.
+1. **`assign_chunks_by_chapter`** (preferred) — when chunks carry distinct
+   `chapter` metadata (extracted by `chunking.extract_chapters`), one SLM is
+   created per chapter. The centroid is the mean of the chapter's embeddings.
 
-2. **`assign_chunks` (cosine, soglia 0.55)** — fallback per documenti senza struttura. Per ogni chunk:
-   - calcola la cosine vs il centroide di ogni SLM esistente
-   - se `best_score ≥ threshold` → assegna; aggiorna il centroide incrementalmente:
-     `new_centroid = normalize((old · (n-1) + new_emb) / n)`
-   - altrimenti → crea un nuovo SLM seedato con questo chunk
+2. **`assign_chunks` (cosine, threshold 0.55)** — fallback for documents with
+   no chapter structure. For each chunk:
+   - compute the cosine similarity against every existing centroid;
+   - if `best_score ≥ threshold` → assign and update the centroid
+     incrementally:
+     `new_centroid = normalise((old · (n-1) + new_emb) / n)`;
+   - otherwise → seed a new SLM with this chunk.
 
-3. **`cluster_chunks_hdbscan`** (alternativa batch) — clustering globale di tutti i chunk con HDBSCAN. Riduce prima a 50D con PCA (le distanze cosine in 768D+ collassano per *concentration of measure*), poi cluster per densità. Punti di rumore (`label == -1`) vengono riassegnati al cluster più vicino. Il modello viene persistito in `hdbscan_model.pkl` per ingestione incrementale via `approximate_predict()`.
+### Merge
 
-### Merge degli SLM
+`merge_close_slms(threshold=0.88)` iteratively fuses the pair of SLMs with
+the highest pairwise cosine above the threshold:
 
-`merge_close_slms(threshold=0.88)` fonde iterativamente le coppie con cosine pairwise più alta sopra soglia:
-
-- l'SLM con più chunk "vince" e assorbe l'altro
-- centroid merge **pesato per chunk_count**: `(c_a · n_a + c_b · n_b) / (n_a + n_b)` poi normalizzato
-- il summary viene rigenerato dopo la fusione
+- the SLM with more chunks "wins" and absorbs the other;
+- the merged centroid is a chunk-count-weighted mean
+  `(c_a · n_a + c_b · n_b) / (n_a + n_b)`, then renormalised;
+- the summary is regenerated for the merged cluster.
 
 ### Keyword extraction (spaCy)
 
-Implementata in `make_spacy_summary_fn` ([router.py:1148-1204](router.py#L1148)):
+Implemented in `make_spacy_summary_fn`:
 
-1. **Pass NER** — tiene entità con label in `{PER, ORG, GPE, LOC, MISC, PRODUCT, EVENT, WORK_OF_ART}`. Esclude `DATE, CARDINAL, ORDINAL, PERCENT` (rumorose).
-2. **Pass POS** — `NOUN` e `PROPN` *non-stop*, **non già coperti da entità**, in forma lemmatizzata.
-3. **`_merge_keywords`** — dedup case-insensitive, *substring absorption* (es. `napoleon` viene assorbito da `napoleon bonaparte`), sort per frequenza.
-4. **`_is_meaningful_kw`** — filtro qualità: scarta token < 4 char, page-refs (`restaurazione 153`), prefissi-artefatto PDF, sequenze tutto-token-corti.
+1. **NER pass** — keep entities labelled `PER, ORG, GPE, LOC, MISC, PRODUCT,
+   EVENT, WORK_OF_ART`. `DATE, CARDINAL, ORDINAL, PERCENT` are dropped (noisy).
+2. **POS pass** — non-stop `NOUN` and `PROPN` tokens not already covered by
+   entities, in lemma form.
+3. **`_merge_keywords`** — case-insensitive dedup, *substring absorption*
+   (e.g. `napoleon` is absorbed by `napoleon bonaparte`), sorted by frequency.
+4. **`_is_meaningful_kw`** — quality filter: drops tokens shorter than 4
+   characters, page references (e.g. `restaurazione 153`), PDF artefact
+   prefixes, and short-token-only sequences.
 
-> **Nota architetturale**: il routing usa l'embedding di `", ".join(keywords)` ([router.py:493](router.py#L493)). Quindi *l'ordine delle keyword non conta*, conta solo *quali keyword finiscono nella stringa*. Un eventuale cap sulla lunghezza della lista impatta direttamente la copertura semantica del routing.
-
-### Estrattori alternativi disponibili
-
-- `make_keybert_summary_fn` — KeyBERT con il SentenceTransformer già caricato.
-- `_qwen_summary_fn` (deprecato come default) — Qwen2.5-7B che genera 10–15 tag con few-shot prompt; più costoso, qualità simile a spaCy nei nostri test.
+> **Architectural note**: routing uses the embedding of `", ".join(keywords)`.
+> The *order* of the keywords does not matter — only *which* keywords end up
+> in the string. Capping the list length therefore directly impacts the
+> semantic coverage of the routing signal.
 
 ---
 
 ## Quickstart
 
-### Installazione
+### Installation
 
 ```bash
 pip install -r requirements.txt
 python -m spacy download it_core_news_lg
 ```
 
-Per CUDA, assicurati di avere PyTorch con il backend giusto. Le pipeline più pesanti (Qwen3.5-4B di generazione) caricano in `float16` automaticamente se `torch.cuda.is_available()`.
+For CUDA acceleration, install PyTorch with the appropriate backend. The
+generation pipelines (Qwen3.5-4B) automatically load in `float16` when
+`torch.cuda.is_available()`.
 
-### UI di ingestione + query
+### Run the UI
 
 ```bash
 python app.py
 # → http://localhost:7860
 ```
 
-Tab **Ingestion**: carica PDF + nome collection → chunking adattivo, embedding, assignment, merge, refresh keyword (spaCy).
-Tab **Query**: domanda + nome modello HF → routing top-N SLM, retrieval ibrido, generazione in streaming con `<think>` filtrato.
+- **Ingestion tab**: upload a PDF and a collection name → adaptive chunking,
+  embedding, SLM assignment, merge, keyword refresh (spaCy).
+- **Query tab**: question + HuggingFace model name → top-N SLM routing, hybrid
+  retrieval (dense + BM25 + RRF), streaming generation with `<think>` tags
+  filtered out client-side.
 
-### Benchmark a 3 modalità
+### Run the benchmark
 
 ```bash
 python benchmark.py
 ```
 
-Genera:
+Generates:
 
-- `benchmark_answers_..._{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md` — report leggibile
-- `..._results.json` — input per `evaluate_quality.py`
+- `benchmark_answers_..._{TOP_N_SLMS}_SLM_TOK_K_{TOP_K}.md` — readable report
+- `..._results.json` — structured results with chunks, answers, and timings
 
-Configurabile via costanti in cima a `benchmark.py` (`TOP_N_SLMS`, `TOP_K`, `GENERATION_MODEL`, `MAX_NEW_TOKENS`, `MAX_INPUT_TOKENS`).
-
-### Valutazione qualitativa con RAGAS
-
-```bash
-export OPENAI_API_KEY=sk-...
-python evaluate_quality.py --input <results>.json --output quality_report.md
-```
-
-Calcola: Contextual Precision, Contextual Recall, Answer Relevancy, Faithfulness, Hallucination (= 1 − Faithfulness). Confronto a 3 vie StdRAG / SLM-RAG / SLM-Full con delta vs baseline.
-
-### Diagnostica & visualizzazione
-
-```bash
-python show_slms.py --sort chunks --output slm_report_spacy.txt
-python diagnose_slms.py                              # distribuzione similarity tra centroidi
-python extract_vectors.py --method pca               # vectors.json per visualizer.html
-python extract_raw_vectors.py --method tsne          # variante senza struttura SLM
-python test_retrieval.py "Chi importava le spezie?"  # CLI veloce
-```
+Configurable via the constants at the top of `benchmark.py` (`TOP_N_SLMS`,
+`TOP_K`, `GENERATION_MODEL`, `MAX_NEW_TOKENS`, `MAX_INPUT_TOKENS`).
 
 ---
 
-## Pipeline dettagliata
+## Pipeline detail
 
 ### 1. PDF → Markdown → Chunks
 
 ```
-PDF ──pymupdf4llm.to_markdown──► full_text (con header markdown)
+PDF ──pymupdf4llm.to_markdown──► full_text (with markdown headers)
                                          │
                                          ▼
                               detect_doc_type (heuristic)
                                          │
                                          ▼
-                              extract_chapters (regex su header)
+                              extract_chapters (regex on headers)
                                          │
                                          ▼
                               RecursiveCharacterTextSplitter
                                   (separators: \n\n, \n, ., space)
                                          │
                                          ▼
-                              filtra _index_noise (INDICE, Glossario, pag. NN)
+                              filter _index_noise (TOC, glossary, page nums)
                                          │
                                          ▼
-                              embedding batch (bge-m3, batch_size=32)
+                              batch embedding (bge-m3, batch_size=32)
                                          │
                                          ▼
-                              salva su ChromaDB: id, text, chapter, embedding
+                              persist in ChromaDB: id, text, chapter, embedding
 ```
 
-**`detect_doc_type`** ([chunking.py:48-94](chunking.py#L48)) usa segnali pesati su 8K caratteri iniziali:
+**`detect_doc_type`** scores weighted signals over the first 8K characters:
 
-- `paper`: `abstract`, `introduction`, `[1]`, `arxiv`, sezioni numerate
-- `book`: `chapter`, `preface`, molti `\n\n`, lunghezza > 50K char
+- `paper`: `abstract`, `introduction`, `[1]`, `arxiv`, numbered sections
+- `book`: `chapter`, `preface`, many `\n\n`, length > 50K chars
 - `technical`: `api`, `def `, code blocks, `installation`
-- `generic`: fallback se nessuno scoring ≥ 2
+- `generic`: fallback when no score reaches 2
 
-**Profili di chunking** ([chunking.py:22-43](chunking.py#L22)):
+**Chunking profiles**:
 
-| Tipo      | chunk_size | overlap |
+| Type      | chunk_size | overlap |
 |-----------|------------|---------|
 | paper     | 800        | 100     |
 | book      | 1500       | 150     |
 | technical | 1200       | 200     |
 | generic   | 1500       | 150     |
 
-**`extract_chapters`** ([chunking.py:117-158](chunking.py#L117)) usa una regex stringente per capitoli numerati italiani (`## 1. IL 1300`) o titoli tutto-maiuscolo (`## L'ETÀ DELLA RINASCITA`). Se nessun match → fallback `"Document"` come unico capitolo.
+`extract_chapters` uses a strict regex matching numbered Italian-style
+chapter titles (`## 1. IL 1300`) and all-caps section headings (`## L'ETÀ
+DELLA RINASCITA`). When no match is found, the document is treated as a
+single `"Document"` section.
 
 ### 2. Assignment & merge
 
-Vedi [router.py:561-748](router.py#L561). Il flusso `assign_chunks_auto` decide tra strategia chapter-based e cosine-based; dopo l'assignment, `merge_close_slms` consolida cluster troppo vicini.
+`assign_chunks_auto` picks between the chapter-based and cosine-based
+strategies; after assignment, `merge_close_slms` consolidates clusters that
+ended up too close.
 
-**Threshold defaults**:
+**Default thresholds** (in `app.py:upload_and_chunk`):
 
-- assignment cosine: `0.55` (in `app.py:upload_and_chunk`)
-- merge cosine: `0.88` (in `app.py:upload_and_chunk`)
-- threshold più strict in `assign_chunk` standalone: `0.65`
+- assignment cosine: `0.55`
+- merge cosine: `0.88`
+- standalone `assign_chunk` threshold: `0.65`
 
-### 3. Refresh delle summary
+### 3. Summary refresh
 
-`refresh_all_summaries` ([router.py:502-521](router.py#L502)) itera tutti gli SLM, per ognuno:
+`refresh_all_summaries` iterates over every SLM and, for each:
 
-1. Carica l'**intero** insieme di chunk del cluster da ChromaDB (no centroid-based filtering, per coprire la breadth semantica)
-2. Chiama `summary_fn(texts)` → `(topic_summary, keywords)`
-3. Calcola `routing_text = ", ".join(keywords)` o fallback a `topic_summary`
-4. Embedda `routing_text` → `summary_embedding`
-5. Salva nel registry
+1. Loads the **entire** set of chunks of the cluster from ChromaDB (no
+   centroid-based filtering, so keywords cover the full semantic breadth).
+2. Calls `summary_fn(texts)` → `(topic_summary, keywords)`.
+3. Computes `routing_text = ", ".join(keywords)` (or `topic_summary` as
+   fallback).
+4. Embeds `routing_text` to obtain the `summary_embedding`.
+5. Writes back to the registry.
 
-`unload_summary_model()` libera la VRAM dopo il refresh.
+`unload_summary_model()` releases the VRAM used by the summary LLM after the
+refresh completes.
 
 ### 4. Routing
 
-`find_top_n_slms` ([router.py:945-985](router.py#L945)) calcola la cosine tra `query_embedding` e ogni `summary_embedding` nel registry. Ritorna i top-N ordinati. SLM senza `summary_embedding` valido vengono saltati.
+`find_top_n_slms` computes the cosine similarity between the query embedding
+and every `summary_embedding` in the registry, returning the top-N. SLMs
+without a valid `summary_embedding` are skipped.
 
-### 5. Retrieval ibrido + RRF
+### 5. Hybrid retrieval + RRF
 
-In `app.py:_retrieve_hybrid` ([app.py:129-203](app.py#L129)) e in `benchmark.py:retrieve_*`:
+In `app.py:_retrieve_hybrid` and in `benchmark.py:retrieve_*`:
 
-- **Dense ranking**: cosine tra `query_embedding` e ogni chunk del pool
-- **BM25 ranking**: `BM25Okapi` su `_tokenize` della query e dei documenti
-- **RRF fusion** ([app.py:107-113](app.py#L107)): `score(d) = Σ 1/(k + rank_i(d) + 1)` con `k=60`. Sort per score → top-K.
+- **Dense ranking**: cosine between the query embedding and every chunk in
+  the pool.
+- **BM25 ranking**: `BM25Okapi` over a simple tokenisation of query and
+  documents.
+- **RRF fusion**: `score(d) = Σ 1/(k + rank_i(d) + 1)` with `k=60`. The fused
+  score ranks the pool; the top-K is forwarded to the generator.
 
-### 6. Generazione
+### 6. Generation
 
-`_generate_streaming` ([app.py:206-236](app.py#L206)) carica il modello on-demand (cache di processo), applica il chat template con `enable_thinking=False` (Qwen3 family), genera in streaming con `TextIteratorStreamer` su un thread daemon. La regex `<think>...</think>` viene strippata in tempo reale dal frontend.
+`_generate_streaming` loads the model on demand (process-level cache),
+applies the chat template with `enable_thinking=False` (Qwen3 family), and
+generates tokens via a `TextIteratorStreamer` running on a daemon thread.
+The `<think>...</think>` block is stripped client-side as the stream
+arrives.
 
-System prompt ([SLMAgent.py:85-92](SLMAgent.py#L85)):
+System prompt:
 
-> "Answer the question using ONLY the information provided in the context below.
->  If the answer is not present in the context, respond with 'The answer is not available in the provided context.'
->  CRITICAL: You MUST write your answer in English only."
+> "Answer the question using ONLY the information provided in the context
+>  below. If the answer is not present in the context, respond with 'The
+>  answer is not available in the provided context.' CRITICAL: You MUST
+>  write your answer in English only."
 
-Forzare l'output in inglese consente all'evaluator (RAGAS + mpnet) di lavorare senza language mismatch tra risposta (EN) e ground-truth (EN).
+Forcing English output lets a downstream evaluator compare the generated
+answers against the English ground truth without language mismatch.
 
 ---
 
-## Evaluation
+## Benchmark
 
 ### Setup
 
-`benchmark.py` contiene **25 query** con:
+`benchmark.py` ships with **24 queries** on an Italian history textbook.
+Each query has:
 
-- versione inglese (per generazione)
-- versione italiana (per retrieval — match lessicale BM25)
-- 5–6 keyword attese (metric: keyword hit rate)
-- ground truth in inglese (per RAGAS)
+- an English version (used at generation time);
+- an Italian version (used at retrieval time — BM25 needs language match);
+- a list of expected keywords (`keyword_hit_pct` metric);
+- an English ground truth.
 
-Le query coprono il manuale "Storia 2" usato nei test (medioevo, scoperte geografiche, riforma, rivoluzione francese, napoleone, restaurazione, risorgimento, rivoluzione industriale).
+### Efficiency metrics (per mode)
 
-### Metriche di efficienza
+- `t_ret_ms` — retrieval latency (ms)
+- `t_gen_ms` — generation latency (ms)
+- `pool` — number of chunks actually examined
+- `keyword_hit_pct` — fraction of expected keywords found in the retrieved
+  chunks
+- `overlap_pct` — top-K overlap between StdRAG and SLM-RAG
 
-Misurate per ogni modalità (StdRAG / SLM-RAG / SLM-Full):
+### Results (top-N=3, top-K=5, Qwen3.5-4B)
 
-- `t_ret_ms` — latenza retrieval (ms)
-- `t_gen_ms` — latenza generazione (ms)
-- `pool` — n. chunk effettivamente esaminati
-- `keyword_hit_pct` — % di keyword attese presenti nei chunk recuperati
-- `overlap_pct` — overlap top-K tra StdRAG e SLM-RAG
+| Metric                    | StdRAG    | SLM-RAG          | SLM-Full         |
+|---------------------------|-----------|------------------|------------------|
+| Retrieval speedup         | —         | **4.8×**         | **11.4×**        |
+| Average pool              | 219       | 11 (−95%)        | 11 (−95%)        |
+| Average generation        | 3801 ms   | 3742 ms          | 4489 ms          |
+| Keyword hit               | 62%       | 60%              | 64%              |
+| Top-5 overlap (Std/SLM)   | 49%       | —                | —                |
 
-### Risultati sul corpus 25-capitoli (top-N=3, top-K=5, Qwen3.5-4B)
-
-Estratto da [benchmark_answers_spacy_3_WAYS_2PDF_25chapters_3_SLM_TOK_K_5.md](benchmark_answers_spacy_3_WAYS_2PDF_25chapters_3_SLM_TOK_K_5.md):
-
-| Metrica                    | StdRAG    | SLM-RAG          | SLM-Full         |
-|----------------------------|-----------|------------------|------------------|
-| Speedup retrieval          | —         | **4.8×**         | **11.4×**        |
-| Pool medio                 | 219 chunk | 11 chunk (−95%)  | 11 chunk (+95%)  |
-| Generazione media          | 3801 ms   | 3742 ms          | 4489 ms          |
-| Keyword hit                | 62%       | 60%              | 64%              |
-| Overlap top-5 (Std vs SLM) | 49%       | —                | —                |
-
-**Trade-off osservato**: SLM-RAG raggiunge il 60% di keyword hit (vs 62% StdRAG) con un pool 20× più piccolo. SLM-Full passa al LLM tutti i ~11 chunk del cluster, ottenendo 64% (sopra StdRAG): la "ricontestualizzazione" del cluster intero compensa il filtraggio interno saltato.
-
-### Metriche di qualità (RAGAS, GPT-4o judge)
-
-Calcolate da `evaluate_quality.py`. Ogni metrica è in `[0, 1]`:
-
-| Metrica              | Significato                                                              |
-|----------------------|--------------------------------------------------------------------------|
-| Contextual Precision | I chunk recuperati sono pertinenti? (rapporto chunk utili / totale)      |
-| Contextual Recall    | I fatti del ground-truth sono coperti dai chunk?                         |
-| Answer Relevancy     | La risposta affronta la domanda? (similarity con ricostruzione query)    |
-| Faithfulness         | La risposta si fonda sul contesto? (no allucinazioni)                    |
-| Hallucination        | `1 − Faithfulness`                                                       |
-
-Il report markdown include la tabella aggregata + le metriche per-query + le risposte complete a 3-vie con ground truth.
+**Trade-off**: SLM-RAG attains 60% keyword hit (vs 62% StdRAG) on a pool
+~20× smaller. SLM-Full forwards the full ~11 chunks of the cluster to the
+LLM, reaching 64%: forwarding the entire local neighbourhood compensates
+for the lack of intra-pool ranking.
 
 ---
 
-## Configurazione & tuning
+## Configuration & tuning
 
-### Soglie SLM
+The thresholds are the parameters with the largest impact on behaviour:
 
-Le soglie sono i parametri più impattanti sul comportamento:
+| Param                 | Default | Where                       | Effect                                          |
+|-----------------------|---------|-----------------------------|-------------------------------------------------|
+| assignment threshold  | 0.55    | `app.py:upload_and_chunk`   | lower → many small SLMs; higher → few wide SLMs |
+| merge threshold       | 0.88    | `app.py:upload_and_chunk`   | lower → aggressive merging; higher → fragmented |
+| `SLM_SUMMARY_EVERY_N` | 20      | `router.py`                 | in-flight summary refresh every N chunks added  |
+| `RRF_K`               | 60      | `app.py`                    | higher → more conservative fusion               |
+| `TOP_N_SLMS`          | 3       | `app.py` / `benchmark.py`   | how many SLMs the router forwards               |
+| `TOP_K_CHUNKS`        | 5       | `app.py` / `benchmark.py`   | how many chunks the LLM sees                    |
 
-| Param                  | Default | File           | Effetto                                       |
-|------------------------|---------|----------------|-----------------------------------------------|
-| assign threshold       | 0.55    | `app.py:77`    | < → tanti SLM piccoli; > → pochi SLM larghi   |
-| merge threshold        | 0.88    | `app.py:78`    | < → fusioni aggressive; > → SLM frammentati   |
-| `SLM_SUMMARY_EVERY_N`  | 20      | `router.py:22` | Refresh in-flight ogni N chunk aggiunti       |
-| `MAX_EXCERPT_CHARS`    | 4000    | `router.py:27` | Per Qwen summary (deprecato)                  |
-| `RRF_K`                | 60      | `app.py:33`    | Più alto → fusion più conservativa            |
-| `TOP_N_SLMS`           | 3       | `app.py:30`    | Quanti SLM passa il router                    |
-| `TOP_K_CHUNKS`         | 5       | `app.py:31`    | Quanti chunk passa al LLM                     |
-
-Usa `diagnose_slms.py` per studiare la distribuzione delle similarità prima di tunare la merge threshold.
-
-### Override del chunking
+### Override the chunking profile
 
 ```python
 process_pdf(
     pdf_path,
     collection,
     embedding_model,
-    chunk_size=2000,   # override profilo adattivo
+    chunk_size=2000,   # overrides the adaptive profile
     overlap=200,
 )
 ```
 
-### Cambiare estrattore di keyword
-
-In `app.py:upload_and_chunk`:
-
-```python
-spacy_fn   = make_spacy_summary_fn("it_core_news_lg")
-keybert_fn = make_keybert_summary_fn(embedding_model)
-
-n_refreshed = refresh_all_summaries(embedding_model, chroma_client, summary_fn=spacy_fn)
-# oppure: summary_fn=keybert_fn  oppure: nessun arg → Qwen LLM
-```
-
 ---
 
-## Struttura del progetto
+## Project structure
 
 ```
 .
-├── app.py                          # UI Gradio + query streaming
-├── router.py                       # Logica SLM (registry, assignment, routing, summary)
-├── chunking.py                     # PDF→Markdown, detect_doc_type, profili
-├── SLMAgent.py                     # Dataclass + prompt + RAG end-to-end
-├── benchmark.py                    # Confronto 3 modalità su 25 query
-├── evaluate_quality.py             # RAGAS + GPT-4o judge
-├── show_slms.py                    # Report testuale del registry
-├── diagnose_slms.py                # Distribuzione similarità tra centroidi
-├── extract_vectors.py              # Export 3D con SLM (PCA/t-SNE/UMAP)
-├── extract_raw_vectors.py          # Export 3D senza struttura SLM
-├── test_router.py                  # Test logica router
-├── test_retrieval.py               # CLI retrieval
-├── debug.py                        # Snippet manuali Chroma
+├── app.py                          # Gradio UI + streaming query
+├── router.py                       # SLM logic (registry, assignment, routing, summary)
+├── chunking.py                     # PDF→Markdown, detect_doc_type, profiles
+├── SLMAgent.py                     # Prompt construction
+├── benchmark.py                    # Three-way comparison on 24 queries
 │
-├── registry.json                   # Registry SLM (centroide, summary, keywords, embedding)
-├── slm_data/
-│   └── slm_<hex>_chunks.json       # Lista chunk_id per ogni SLM
-├── chroma_db/                      # Vector store persistente
+├── registry.json                   # SLM registry — generated at runtime
+├── slm_data/                       # Chunk-id lists per SLM — generated at runtime
+│   └── slm_<hex>_chunks.json
+├── chroma_db/                      # ChromaDB persistent store — generated at runtime
 │   └── chroma.sqlite3
-├── hdbscan_model.pkl               # (opz.) Modello HDBSCAN persistito
 │
-├── slm_report_spacy.txt            # Output di show_slms.py (estrazione spaCy)
-├── slm_report_keybert.txt          # Output di show_slms.py (estrazione KeyBERT)
-│
-├── benchmark_answers_*.md          # Report benchmark leggibili
-├── benchmark_answers_*_results.json# Input per evaluate_quality.py
-├── final2PDF_3WAY.md / .json       # Report finale 3-way
-├── FINAL2PDF.json / .md            # Snapshot risultati
-│
-├── leonetti-storia2.pdf            # Corpus di test (manuale di storia)
 ├── requirements.txt
 └── LICENSE
 ```
 
----
-
-## Visualizzazione 3D
-
-`extract_vectors.py` esporta `vectors.json` con:
-
-- coordinate 3D di ogni chunk (PCA / t-SNE / UMAP)
-- coordinate 3D di ogni centroide SLM
-- raggi d'azione (max, mean, std) calcolati come distanza chunk→centroide
-
-Apri `visualizer.html` (Three.js) e carica `vectors.json` per esplorare la topologia semantica. I chunk sono colorati per SLM. Vedi `extract_raw_vectors.py` per una vista alternativa colorata per capitolo.
+`registry.json`, `slm_data/`, and `chroma_db/` are gitignored: they are
+rebuilt on first ingestion.
 
 ---
 
-## Estensioni possibili
+## License
 
-- **Cap proporzionale ai chunk** in `_merge_keywords`: SLM con N chunk → fino a `min(40·N, 200)` keyword, invece di un cap fisso (vedi commento in [router.py:336](router.py#L336)).
-- **Bonus NER nel ranking keyword**: utile solo se si pesa l'embedding di routing (es. ripetizioni); con embedding uniforme l'ordine non conta.
-- **Embedding pesato** per il routing: oggi `", ".join(keywords)` perde la frequenza; pesare con repeat-N o BM25-style cambierebbe il signal.
-- **HDBSCAN come default** quando il documento non ha capitoli — già implementato in `cluster_chunks_hdbscan`.
-- **Online ingestion**: `assign_chunk` supporta già l'incremental con `_update_centroid`; il summary refresh periodico (`SLM_SUMMARY_EVERY_N`) è il loop completo.
-
----
-
-## Licenza
-
-Vedi `LICENSE`.
+See `LICENSE`.
