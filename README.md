@@ -1,6 +1,4 @@
-# AGI — Adaptive Granular Indexing
-
-> *AGI is not an LLM (e fino a qui, siamo tutti d'accordo).*
+# CLARA
 
 Sistema RAG (Retrieval-Augmented Generation) **a doppio livello di indicizzazione semantica** progettato per la lingua italiana. Il documento viene partizionato in **SLM** (*Semantic Language Maps*) — cluster semantici di chunk — su cui un router instrada le query, riducendo drasticamente lo spazio di ricerca senza degradare la qualità delle risposte.
 
