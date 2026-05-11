@@ -10,15 +10,6 @@ dedicated inter-agent operation.
 
 ![CLARA Architecture](CLARA_Architecture.png)
 
-Each cluster agent is materialised as:
-
-- a **local memory** *M_j* — the chunks of the cluster;
-- a **semantic profile** *P_j* — keyword set + summary embedding (routing);
-- a **DSL interface** *I* — four uniform operations: `local_retrieve`,
-  `select_evidence`, `provide_evidence`, `generate`.
-
-All components run locally on commodity hardware without network dependency.
-
 ---
 
 ## Architecture
@@ -70,14 +61,6 @@ All components run locally on commodity hardware without network dependency.
        ▼
    A*.generate(q, Γ) → answer
 ```
-
-> **Locality invariant.** Retrieval operations access only the agent's local
-> memory *M_j*. Secondary agents act strictly as evidence providers;
-> `generate` is invoked only on the primary.
->
-> **Graceful degradation.** When the document yields a single cluster
-> (*m = 1*), *K = 1*: no secondaries, *Γ = E\**, and CLARA approaches a
-> standard RAG pipeline with minimal routing overhead.
 
 ### Cluster-Agent DSL contract
 
@@ -136,9 +119,6 @@ service ClusterAgent {
 ---
 
 ## SLM registry
-
-A cluster is recorded in `registry.json` with its centroid (used for
-assignment and merge) and its summary embedding (used for query routing):
 
 ```json
 {
