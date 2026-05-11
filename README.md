@@ -8,6 +8,8 @@ relevant cluster agents per query; the **primary** agent handles retrieval
 and generation, while **secondary** agents contribute evidence through a
 dedicated inter-agent operation.
 
+![CLARA Architecture](CLARA_Architecture.png)
+
 Each cluster agent is materialised as:
 
 - a **local memory** *M_j* — the chunks of the cluster;
@@ -129,7 +131,7 @@ service ClusterAgent {
 | `orchestrator.py` | `Orchestrator` — routing, role assignment, Γ aggregation, generation  |
 | `SLMAgent.py`     | Prompt construction (chat-template helper)                            |
 | `app.py`          | Gradio UI + ingestion + streaming query                               |
-| `benchmark.py`    | StdRAG vs CLARA quantitative comparison on 24 queries                 |
+| `benchmark.py`    | StdRAG vs CLARA quantitative comparison on 75 queries                 |
 
 ---
 
@@ -174,6 +176,7 @@ python app.py
 
 ```bash
 python benchmark.py
+python evaluate_quality.py
 ```
 
 ---
@@ -189,6 +192,7 @@ python benchmark.py
 ├── SLMAgent.py         # prompt construction
 ├── app.py              # Gradio UI + streaming query
 ├── benchmark.py        # StdRAG vs CLARA comparison
+├── evaluate_quality.py # RAGAS evaluation
 │
 ├── registry.json       # generated at runtime
 ├── slm_data/           # generated at runtime
